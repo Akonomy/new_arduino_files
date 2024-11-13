@@ -1,0 +1,61 @@
+#include <Wire.h>   // For I2C
+
+// Data storage for received data
+volatile uint8_t receivedData[2] = {0x00, 0x00}; // Array to hold 2 bytes
+volatile bool i2cDataReceived = false;
+
+void setup() {
+  Serial.begin(38400);    // Initialize UART for communication and debugging
+  Wire.begin(0x08);       // Initialize I2C as slave with address 0x08
+
+  // Set up I2C receive callback
+  Wire.onReceive(receiveI2C);
+
+  Serial.println("Setup Complete. Waiting for data...");
+}
+
+void loop() {
+  // USART reception
+  testUSART();
+
+  // I2C data received check and display
+  if (i2cDataReceived) {
+    Serial.print("I2C Received: [0x");
+    Serial.print(receivedData[0], HEX);
+    Serial.print(", 0x");
+    Serial.print(receivedData[1], HEX);
+    Serial.println("]");
+    i2cDataReceived = false;
+  }
+
+  delay(100); // Small delay for readability
+}
+
+// Test USART reception
+void testUSART() {
+  if (Serial.available() >= 1) { // Check if at least 2 bytes are received
+    receivedData[0] = Serial.read(); // Read the first byte
+    receivedData[1] = Serial.read(); // Read the second byte
+
+    Serial.print("USART Received: [0x");
+    Serial.print(receivedData[0], HEX);
+    Serial.print(", 0x");
+    Serial.print(receivedData[1], HEX);
+    Serial.println("]");
+  }
+}
+
+// I2C receive callback
+void receiveI2C(int byteCount) {
+  int index = 0; // To track array position
+  while (Wire.available() && index < 2) { // Limit to 2 bytes
+    receivedData[index++] = Wire.read(); // Store received data
+  }
+
+  // Fill remaining bytes with 0 if less than 2 bytes received
+  while (index < 2) {
+    receivedData[index++] = 0x00;
+  }
+
+  i2cDataReceived = true; // Flag to process data in loop
+}
