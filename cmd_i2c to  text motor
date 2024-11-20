@@ -1,0 +1,44 @@
+#include <Wire.h>
+
+// Function to map direction index to corresponding text
+const char* getDirectionText(uint8_t direction) {
+    switch (direction) {
+        case 0: return "STOP";
+        case 1: return "FORWARD";
+        case 2: return "RIGHT";
+        case 3: return "LEFT";
+        case 4: return "SLIGHTLY RIGHT";
+        case 5: return "SLIGHTLY LEFT";
+        case 6: return "BACK (UNUSED)";
+        default: return "UNKNOWN";
+    }
+}
+
+void receiveEvent(int howMany) {
+    while (howMany >= 3) {  // Process each {index, value} pair
+        uint8_t index = Wire.read();          // Read index
+        uint16_t value = (Wire.read() << 8);  // Read high byte
+        value |= Wire.read();                 // Read low byte
+        howMany -= 3;
+
+        // Print the direction text based on the value
+        Serial.print("Index: ");
+        Serial.print(index);
+        Serial.print(" | Value: ");
+        Serial.print(value);
+        Serial.print(" | Direction: ");
+        Serial.println(getDirectionText(value));
+    }
+}
+
+void setup() {
+    Wire.begin(8);  // I2C address 8
+    Wire.onReceive(receiveEvent);
+    Serial.begin(9600);
+}
+
+void loop() {
+    // Delimiter for readability
+   
+    delay(90);  // Do nothing, data handled in receiveEvent
+}
