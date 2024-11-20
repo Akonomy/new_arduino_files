@@ -1,0 +1,80 @@
+// Define control pins for 74HC595
+int latchPin = 5;   // Connects to RCLK (Pin 12 on 74HC595)
+int clockPin = 6;   // Connects to SRCLK (Pin 11 on 74HC595)
+int dataPin = 4;    // Connects to SER (Pin 14 on 74HC595)
+int oePin = 3;      // Connects to OE (Pin 13 on 74HC595) - PWM control
+
+void setup() {
+  // Set pins as outputs
+  pinMode(latchPin, OUTPUT);
+  pinMode(clockPin, OUTPUT);
+  pinMode(dataPin, OUTPUT);
+  pinMode(oePin, OUTPUT);
+
+  // Set PWM to 50% (value = 128)
+  analogWrite(oePin, 128);
+
+  // Initialize all wheels off
+  updateShiftRegister(0b00000000);
+}
+
+void loop() {
+  // Test movements based on your provided codes
+  testMovements();
+}
+
+void testMovements() {
+  byte movementCodes[] = {
+    0b01010101, // FRONT
+  0b10101010, // BACK
+
+  
+    0b01000100, // DIAGONAL RIGHT
+    0b10001000, // DIAGONAL LEFT
+
+0b00010100, //hard turn left
+0b00101000, //hard turn right
+
+    0b01100000, //   LEFT
+    0b10010000,  //   RIGHT
+
+
+  0b00000110, // a little to RIGHT
+0b00001001, //a little to LEFT
+
+
+0b01101001, //LEFT rotate
+0b10010110,  //RIGHT ROTATE
+
+
+
+
+
+
+
+
+
+
+
+
+  };
+
+  for (int i = 0; i < sizeof(movementCodes) / sizeof(movementCodes[0]); i++) {
+    // Activate the movement
+    updateShiftRegister(movementCodes[i]);
+
+    // Delay to observe the movement
+    delay(2000);
+
+    // Stop the movement before the next test
+    updateShiftRegister(0b00000000);
+    delay(500);
+  }
+}
+
+// Function to send data to the 74HC595
+void updateShiftRegister(byte data) {
+  digitalWrite(latchPin, LOW);
+  shiftOut(dataPin, clockPin, MSBFIRST, data);
+  digitalWrite(latchPin, HIGH);
+}
