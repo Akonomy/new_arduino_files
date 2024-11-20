@@ -1,0 +1,128 @@
+#include <Wire.h>
+
+// Define control pins for 74HC595
+int latchPin = 5;   // Connects to RCLK (Pin 12 on 74HC595)
+int clockPin = 6;   // Connects to SRCLK (Pin 11 on 74HC595)
+int dataPin = 4;    // Connects to SER (Pin 14 on 74HC595)
+int oePin = 3;      // Connects to OE (Pin 13 on 74HC595) - PWM control
+
+// Timeout configuration
+const unsigned long TIMEOUT_MS = 1000; // 1 second timeout
+unsigned long lastCommandTime = 0;     // Timestamp of the last received command
+
+// Function to map direction index to corresponding text
+const char* getDirectionText(uint8_t direction) {
+    switch (direction) {
+        case 0: return "STOP";
+        case 1: return "FORWARD";
+        case 2: return "RIGHT";
+        case 3: return "LEFT";
+        case 4: return "SLIGHTLY RIGHT";
+        case 5: return "SLIGHTLY LEFT";
+        case 6: return "DIAGONAL RIGHT";
+        case 7: return "DIAGONAL LEFT";
+        case 8: return "HARD TURN LEFT";
+        case 9: return "HARD TURN RIGHT";
+        case 10: return "LEFT ROTATE";
+        case 11: return "RIGHT ROTATE";
+        case 12: return "BACKWARD";
+        default: return "UNKNOWN";
+    }
+}
+
+// Function to map direction code to byte code for 74HC595
+byte getMovementByte(uint8_t direction) {
+    switch (direction) {
+        case 0: return 0b00000000; // STOP
+        case 1: return 0b01010101; // FORWARD
+        case 2: return 0b10010000; // RIGHT
+        case 3: return 0b01100000; // LEFT
+        case 4: return 0b00000110; // SLIGHTLY RIGHT
+        case 5: return 0b00001001; // SLIGHTLY LEFT
+        case 6: return 0b01000100; // DIAGONAL RIGHT
+        case 7: return 0b10001000; // DIAGONAL LEFT
+        case 8: return 0b00010100; // HARD TURN LEFT
+        case 9: return 0b00101000; // HARD TURN RIGHT
+        case 10: return 0b01101001; // LEFT ROTATE
+        case 11: return 0b10010110; // RIGHT ROTATE
+        case 12: return 0b10101010; // BACKWARD
+        default: return 0b00000000; // Default to STOP
+    }
+}
+
+// Function to send data to the 74HC595
+void updateShiftRegister(byte data) {
+    digitalWrite(latchPin, LOW);
+    shiftOut(dataPin, clockPin, MSBFIRST, data);
+    digitalWrite(latchPin, HIGH);
+}
+
+// Function to set speed using PWM on oePin
+void setMotorSpeed(uint8_t speed) {
+    analogWrite(oePin, speed); // Set PWM duty cycle (0-255)
+}
+
+// I2C receive event handler
+void receiveEvent(int howMany) {
+    while (howMany >= 3) {  // Process each {speed, direction} pair
+        uint8_t speed = Wire.read();          // Read speed (0-255)
+        uint16_t direction = (Wire.read() << 8);  // Read high byte of direction
+        direction |= Wire.read();             // Read low byte of direction
+        howMany -= 3;
+
+        // Print the speed, direction, and action
+        Serial.print("Speed: ");
+        Serial.print(speed);
+        Serial.print(" | Direction Code: ");
+        Serial.print(direction);
+        Serial.print(" | Direction: ");
+        Serial.println(getDirectionText(direction));
+
+        // Set motor speed
+        setMotorSpeed(speed);
+
+        // Get the movement byte and update the shift register
+        byte movementByte = getMovementByte(direction);
+        updateShiftRegister(movementByte);
+
+        // Update the last command time
+        lastCommandTime = millis();
+    }
+}
+
+void setup() {
+    // Initialize pins
+    pinMode(latchPin, OUTPUT);
+    pinMode(clockPin, OUTPUT);
+    pinMode(dataPin, OUTPUT);
+    pinMode(oePin, OUTPUT);
+
+    // Initialize PWM with speed set to 0
+    analogWrite(oePin, 0);
+
+    // Initialize shift register to STOP
+    updateShiftRegister(0b00000000);
+
+    // Initialize I2C and Serial communication
+    Wire.begin(8);  // I2C address 8
+    Wire.onReceive(receiveEvent);
+    Serial.begin(9600);
+
+    // Set the initial last command time
+    lastCommandTime = millis();
+}
+
+void loop() {
+    // Check for timeout
+    if (millis() - lastCommandTime > TIMEOUT_MS) {
+        // Timeout reached, issue STOP command
+        setMotorSpeed(0);             // Set speed to 0
+        updateShiftRegister(0b00000000); // Send STOP to shift register
+
+        // Print timeout information
+        Serial.println("Timeout: No command received. Stopping.");
+    }
+
+    // Delimiter for readability
+    delay(90);  // Do nothing, data handled in receiveEvent
+}
