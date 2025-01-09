@@ -1,4 +1,5 @@
 #include <Wire.h>
+#include <Servo.h> // Library to control servos
 
 // Define control pins for 74HC595
 int latchPin = 5;   // Connects to RCLK (Pin 12 on 74HC595)
@@ -6,8 +7,15 @@ int clockPin = 6;   // Connects to SRCLK (Pin 11 on 74HC595)
 int dataPin = 4;    // Connects to SER (Pin 14 on 74HC595)
 int oePin = 3;      // Connects to OE (Pin 13 on 74HC595) - PWM control
 
+// Servo control pins
+int servo1Pin = 9;  // PWM pin for Servo 1
+int servo2Pin = 10; // PWM pin for Servo 2
+
+Servo servo1;
+Servo servo2;
+
 // Timeout configuration
-const unsigned long TIMEOUT_MS = 1000; // 1 second timeout
+const unsigned long TIMEOUT_MS = 300; // 1 second timeout
 unsigned long lastCommandTime = 0;     // Timestamp of the last received command
 
 // Function to map direction index to corresponding text
@@ -62,6 +70,33 @@ void setMotorSpeed(uint8_t speed) {
     analogWrite(oePin, speed); // Set PWM duty cycle (0-255)
 }
 
+// Function to handle servo angles
+void handleServoCommand(uint16_t command) {
+    uint8_t servoIndex = command / 100; // Extract the servo index (180, 181, etc.)
+    uint8_t angle = command % 100;      // Extract the angle (0-99, mapped to 0-180 degrees)
+
+    // Map angle to servo range (0-180 degrees)
+    uint8_t servoAngle = angle;
+
+    switch (servoIndex) {
+        case 180: // Control Servo 1
+            servo1.write(servoAngle);
+            Serial.print("Servo 1 Angle: ");
+            Serial.println(servoAngle);
+            break;
+
+        case 181: // Control Servo 2
+            servo2.write(servoAngle);
+            Serial.print("Servo 2 Angle: ");
+            Serial.println(servoAngle);
+            break;
+
+        default:
+            Serial.println("Unknown servo command");
+            break;
+    }
+}
+
 // I2C receive event handler
 void receiveEvent(int howMany) {
     while (howMany >= 3) {  // Process each {speed, direction} pair
@@ -78,12 +113,16 @@ void receiveEvent(int howMany) {
         Serial.print(" | Direction: ");
         Serial.println(getDirectionText(direction));
 
-        // Set motor speed
-        setMotorSpeed(speed);
+        if (direction >= 180 && direction <= 189) {
+            handleServoCommand(direction);
+        } else {
+            // Set motor speed
+            setMotorSpeed(speed);
 
-        // Get the movement byte and update the shift register
-        byte movementByte = getMovementByte(direction);
-        updateShiftRegister(movementByte);
+            // Get the movement byte and update the shift register
+            byte movementByte = getMovementByte(direction);
+            updateShiftRegister(movementByte);
+        }
 
         // Update the last command time
         lastCommandTime = millis();
@@ -96,6 +135,10 @@ void setup() {
     pinMode(clockPin, OUTPUT);
     pinMode(dataPin, OUTPUT);
     pinMode(oePin, OUTPUT);
+
+    // Attach servos
+    servo1.attach(servo1Pin);
+    servo2.attach(servo2Pin);
 
     // Initialize PWM with speed set to 0
     analogWrite(oePin, 0);
@@ -120,7 +163,7 @@ void loop() {
         updateShiftRegister(0b00000000); // Send STOP to shift register
 
         // Print timeout information
-        Serial.println("Timeout: No command received. Stopping.");
+        //Serial.println("Timeout: No command received. Stopping.");
     }
 
     // Delimiter for readability
