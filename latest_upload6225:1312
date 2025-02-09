@@ -1,349 +1,286 @@
 #include <Wire.h>
-#include <Servo.h> // Library to control servos
+#include <Servo.h>
 
 // ==================
 // 74HC595 Control
 // ==================
-
-// Define control pins for 74HC595
-int latchPin = 5;   // Connects to RCLK (Pin 12 on 74HC595)
-int clockPin = 6;   // Connects to SRCLK (Pin 11 on 74HC595)
-int dataPin = 4;    // Connects to SER (Pin 14 on 74HC595)
-int oePin = 3;      // Connects to OE (Pin 13 on 74HC595) - PWM control
+int latchPin = 5;   // Conectat la RCLK (Pin 12 pe 74HC595)
+int clockPin = 6;   // Conectat la SRCLK (Pin 11 pe 74HC595)
+int dataPin = 4;    // Conectat la SER (Pin 14 pe 74HC595)
+int oePin = 3;      // Conectat la OE (Pin 13 pe 74HC595) - control PWM
 
 // ==================
-// Servo and Sensor Setup
+// Servo și Senzori
 // ==================
-
-// Servo control pins
-int servo1Pin = 9;  // PWM pin for Servo 1
-int servo2Pin = 10; // PWM pin for Servo 2
+int servo1Pin = 9;  // Pin PWM pentru Servo 1
+int servo2Pin = 10; // Pin PWM pentru Servo 2
 
 Servo servo1;
 Servo servo2;
 
-// Current sensor pins for servos
-const int servo1SensorPin = A1;  // Analog pin for Servo 1 current sensor
-const int servo2SensorPin = A2;  // Analog pin for Servo 2 current sensor
+const int servo1SensorPin = A1;  // Senzor curent Servo 1
+const int servo2SensorPin = A2;  // Senzor curent Servo 2
 
-// Error line pin (digital output)
-const int errorPin = 2;  // Digital output for error signaling
+const int errorPin = 2;  // Pin de semnalizare eroare
 
-// Global variables to track each servo's current angle
+// Unghiurile curente ale servomotoarelor
 int servo1CurrentAngle = 0;
 int servo2CurrentAngle = 0;
 
 // ==================
-// Timeout configuration (for other commands)
+// Configurare Timeout
 // ==================
-
-const unsigned long TIMEOUT_MS = 300; // Timeout period
-unsigned long lastCommandTime = 0;     // Timestamp of the last received command
-
-// ==================
-// Current Monitoring Constants for Servos
-// ==================
-
-// These threshold values come from the original test code. Adjust as needed.
-const float SERVO_FORWARD_THRESHOLD = 0.0100;   // When moving upward/increasing angle
-const float SERVO_BACKWARD_THRESHOLD = 0.0100;    // When moving downward/decreasing angle
+const unsigned long TIMEOUT_MS = 300;
+unsigned long lastCommandTime = 0;
 
 // ==================
-// Utility Functions (74HC595, Motor Speed, etc.)
+// Constante pentru monitorizarea curentului la servomotoare
+// ==================
+const float SERVO_FORWARD_THRESHOLD = 0.0100;
+const float SERVO_BACKWARD_THRESHOLD = 0.0100;
+
+// ==================
+// Mod Debug
+// ==================
+bool debugMode = false;
+
+// ==================
+// Funcții Utilitare
 // ==================
 
-// Function to map direction index to corresponding text
+// (Funcția getDirectionText este păstrată doar pentru referință internă.)
 const char* getDirectionText(uint8_t direction) {
-    switch (direction) {
-        case 0: return "STOP";
-        case 1: return "FORWARD";
-        case 2: return "RIGHT";
-        case 3: return "LEFT";
-        case 4: return "SLIGHTLY RIGHT";
-        case 5: return "SLIGHTLY LEFT";
-        case 6: return "DIAGONAL RIGHT";
-        case 7: return "DIAGONAL LEFT";
-        case 8: return "HARD TURN LEFT";
-        case 9: return "HARD TURN RIGHT";
-        case 10: return "LEFT ROTATE";
-        case 11: return "RIGHT ROTATE";
-        case 12: return "BACKWARD";
-        default: return "UNKNOWN";
-    }
+  switch(direction) {
+    case 0:  return "STOP";
+    case 1:  return "FORWARD";
+    case 2:  return "RIGHT";
+    case 3:  return "LEFT";
+    case 4:  return "SLIGHTLY RIGHT";
+    case 5:  return "SLIGHTLY LEFT";
+    case 6:  return "DIAGONAL RIGHT";
+    case 7:  return "DIAGONAL LEFT";
+    case 8:  return "HARD TURN LEFT";
+    case 9:  return "HARD TURN RIGHT";
+    case 10: return "LEFT ROTATE";
+    case 11: return "RIGHT ROTATE";
+    case 12: return "BACKWARD";
+    case 56: return "DEBUG_MODE";
+    default: return "UNKNOWN";
+  }
 }
 
-// Function to map direction code to byte code for 74HC595
 byte getMovementByte(uint8_t direction) {
-    switch (direction) {
-        case 0: return 0b00000000; // STOP
-        case 1: return 0b01010101; // FORWARD
-        case 2: return 0b10010000; // RIGHT
-        case 3: return 0b01100000; // LEFT
-        case 4: return 0b00000110; // SLIGHTLY RIGHT
-        case 5: return 0b00001001; // SLIGHTLY LEFT
-        case 6: return 0b01000100; // DIAGONAL RIGHT
-        case 7: return 0b10001000; // DIAGONAL LEFT
-        case 8: return 0b00010100; // HARD TURN LEFT
-        case 9: return 0b00101000; // HARD TURN RIGHT
-        case 10: return 0b01101001; // LEFT ROTATE
-        case 11: return 0b10010110; // RIGHT ROTATE
-        case 12: return 0b10101010; // BACKWARD
-        default: return 0b00000000; // Default to STOP
-    }
+  switch(direction) {
+    case 0:  return 0b00000000; // STOP
+    case 1:  return 0b01010101; // FORWARD
+    case 2:  return 0b10010000; // RIGHT
+    case 3:  return 0b01100000; // LEFT
+    case 4:  return 0b00000110; // SLIGHTLY RIGHT
+    case 5:  return 0b00001001; // SLIGHTLY LEFT
+    case 6:  return 0b01000100; // DIAGONAL RIGHT
+    case 7:  return 0b10001000; // DIAGONAL LEFT
+    case 8:  return 0b00010100; // HARD TURN LEFT
+    case 9:  return 0b00101000; // HARD TURN RIGHT
+    case 10: return 0b01101001; // LEFT ROTATE
+    case 11: return 0b10010110; // RIGHT ROTATE
+    case 12: return 0b10101010; // BACKWARD
+    default: return 0b00000000; // Implicit STOP
+  }
 }
 
-// Function to send data to the 74HC595
 void updateShiftRegister(byte data) {
-    digitalWrite(latchPin, LOW);
-    shiftOut(dataPin, clockPin, MSBFIRST, data);
-    digitalWrite(latchPin, HIGH);
+  digitalWrite(latchPin, LOW);
+  shiftOut(dataPin, clockPin, MSBFIRST, data);
+  digitalWrite(latchPin, HIGH);
 }
 
-// Function to set speed using PWM on oePin
 void setMotorSpeed(uint8_t speed) {
-    analogWrite(oePin, speed); // Set PWM duty cycle (0-255)
+  analogWrite(oePin, speed);
 }
 
 // ==================
-// Current Sensor Reading Function
+// Funcție pentru citirea senzorului de curent
 // ==================
-
-// This function reads the analog sensor (using 500 samples, ignoring the min and max)
 float readCurrentSensor(int sensorPin) {
-    float samples = 0.0, avgVal = 0.0, currentVal = 0.0;
-    float minVal = 1023, maxVal = 0;  
-
-    for (int x = 0; x < 500; x++) {  
-        float sample = analogRead(sensorPin);
-        samples += sample;
-        if (sample < minVal) minVal = sample;
-        if (sample > maxVal) maxVal = sample;
-    }
-
-    samples -= (minVal + maxVal);
-    avgVal = samples / 498.0;  // Remove the two outliers
-
-    // Convert the analog average to current (formula from your test code)
-    currentVal = (2.5 - (avgVal * (5.0 / 1024.0))) / 0.185;  
-
-    return currentVal;
+  float samples = 0.0, avgVal = 0.0, currentVal = 0.0;
+  float minVal = 1023, maxVal = 0;  
+  for (int x = 0; x < 500; x++) {
+    float sample = analogRead(sensorPin);
+    samples += sample;
+    if (sample < minVal) minVal = sample;
+    if (sample > maxVal) maxVal = sample;
+  }
+  samples -= (minVal + maxVal);
+  avgVal = samples / 498.0;  
+  currentVal = (2.5 - (avgVal * (5.0 / 1024.0))) / 0.185;  
+  return currentVal;
 }
 
 // ==================
-// Servo Movement with Current Monitoring
+// Mișcarea servo cu monitorizarea curentului
 // ==================
-
-// This function moves a servo gradually from its current angle to a target angle.
-// It monitors the associated current sensor and, if the measured current exceeds the threshold,
-// it “retracts” (moves away from the target) and retries. After 4 failed attempts, it aborts the command,
-// retracts the servo to 0, and sets the error line HIGH.
 bool moveServoWithCurrentMonitoring(Servo &servo, int &currentAngle, int targetAngle, int sensorPin) {
-    int tries = 0;
-    const int maxTries = 4;
-    const int stepSize = 1;       // Step size in degrees (adjust as needed)
-    const int retractDegrees = 20; // How many degrees to retract on an overcurrent event
-
-    // Determine motion direction
-    bool movingForward = (targetAngle > currentAngle);
-
-    // Loop until the target angle is reached or we exceed max tries.
-    while (currentAngle != targetAngle && tries < maxTries) {
-        bool thresholdTriggered = false;
-        // Depending on the direction, increment or decrement.
-        if (movingForward) {
-            for (int angle = currentAngle; angle <= targetAngle; angle += stepSize) {
-                if (angle > targetAngle) angle = targetAngle;
-                servo.write(angle);
-                delay(5); // Small delay for smooth movement
-
-                // Read current sensor value
-                float currentVal = readCurrentSensor(sensorPin);
-                // If current reading exceeds threshold while moving forward, trigger a retract.
-                if (currentVal >= SERVO_FORWARD_THRESHOLD) {
-                    thresholdTriggered = true;
-                    Serial.print("Overcurrent (forward) detected at angle ");
-                    Serial.println(angle);
-                    break;
-                }
-                currentAngle = angle;
-                if (currentAngle == targetAngle) {
-                    Serial.print("Reached target angle: ");
-                    Serial.println(targetAngle);
-                    return true;
-                }
-            }
-        } else { // Moving backward (i.e. targetAngle < currentAngle)
-            for (int angle = currentAngle; angle >= targetAngle; angle -= stepSize) {
-                if (angle < targetAngle) angle = targetAngle;
-                servo.write(angle);
-                delay(5); // Small delay for smooth movement
-
-                float currentVal = readCurrentSensor(sensorPin);
-                // For reverse motion, assume the sensor polarity is reversed.
-                if ((-1 * currentVal) >= SERVO_BACKWARD_THRESHOLD) {
-                    thresholdTriggered = true;
-                    Serial.print("Overcurrent (backward) detected at angle ");
-                    Serial.println(angle);
-                    break;
-                }
-                currentAngle = angle;
-                if (currentAngle == targetAngle) {
-                    Serial.print("Reached target angle: ");
-                    Serial.println(targetAngle);
-                    return true;
-                }
-            }
+  int tries = 0;
+  const int maxTries = 4;
+  const int stepSize = 1;
+  const int retractDegrees = 20;
+  bool movingForward = (targetAngle > currentAngle);
+  
+  while (currentAngle != targetAngle && tries < maxTries) {
+    bool thresholdTriggered = false;
+    if (movingForward) {
+      for (int angle = currentAngle; angle <= targetAngle; angle += stepSize) {
+        if (angle > targetAngle) angle = targetAngle;
+        servo.write(angle);
+        delay(5);
+        float currentVal = readCurrentSensor(sensorPin);
+        if (currentVal >= SERVO_FORWARD_THRESHOLD) {
+          thresholdTriggered = true;
+          break;
         }
-        
-        // If an overcurrent condition was detected during this pass, retract and retry.
-        if (thresholdTriggered) {
-            tries++;
-            Serial.print("Retracting... Try ");
-            Serial.println(tries);
-            if (movingForward) {
-                // Retract away from the target but do not go below 0.
-                currentAngle = max(currentAngle - retractDegrees, 0);
-            } else {
-                // Retract away from the target but do not exceed 180.
-                currentAngle = min(currentAngle + retractDegrees, 180);
-            }
-            servo.write(currentAngle);
-            delay(2000);  // Wait 2 seconds before trying again
+        currentAngle = angle;
+        if (currentAngle == targetAngle) return true;
+      }
+    } else { // Mișcare inversă
+      for (int angle = currentAngle; angle >= targetAngle; angle -= stepSize) {
+        if (angle < targetAngle) angle = targetAngle;
+        servo.write(angle);
+        delay(5);
+        float currentVal = readCurrentSensor(sensorPin);
+        if ((-1 * currentVal) >= SERVO_BACKWARD_THRESHOLD) {
+          thresholdTriggered = true;
+          break;
         }
-    }
-
-    // If we have exceeded the maximum number of tries, abort the servo command.
-    if (tries >= maxTries) {
-        Serial.println("Max tries exceeded. Aborting servo command and signaling error.");
-        currentAngle = 0;
-        servo.write(0);
-        digitalWrite(errorPin, HIGH);  // Set error line HIGH to indicate a fault
-        return false;
+        currentAngle = angle;
+        if (currentAngle == targetAngle) return true;
+      }
     }
     
-    return true;
+    if (thresholdTriggered) {
+      tries++;
+      if (movingForward) {
+        currentAngle = max(currentAngle - retractDegrees, 0);
+      } else {
+        currentAngle = min(currentAngle + retractDegrees, 180);
+      }
+      servo.write(currentAngle);
+      delay(2000);
+    }
+  }
+  
+  if (tries >= maxTries) {
+    currentAngle = 0;
+    servo.write(0);
+    digitalWrite(errorPin, HIGH);
+    return false;
+  }
+  
+  return true;
 }
 
 // ==================
-// Servo Command Handler (Modified)
+// Handler pentru comenzile servo
 // ==================
-
-// In the original main code, servo commands are recognized for commands between 180 and 189.
-// Here we modify the servo command handler to gradually approach the commanded angle
-// while monitoring the respective current sensor.
 void handleServoCommand(uint16_t command) {
-    // Extract the servo identifier and angle from the command.
-    // For example, a command of 18080 means: servoIndex = 180 (Servo 1) and angle = 80.
-    uint8_t servoIndex = command / 100; // Should be 180 for Servo 1 or 181 for Servo 2.
-    uint8_t angle = command % 100;      // Angle in the range 0-99 (mapped directly to 0-180 degrees here)
-    uint8_t servoAngle = angle;         // For simplicity we use angle as is (you could map if needed)
-    
-    switch (servoIndex) {
-        case 180: { // Control Servo 1
-            Serial.print("Servo 1 commanded to angle: ");
-            Serial.println(servoAngle);
-            // Move servo1 gradually to the target angle while monitoring its current sensor.
-            bool success = moveServoWithCurrentMonitoring(servo1, servo1CurrentAngle, servoAngle, servo1SensorPin);
-            if (!success) {
-                Serial.println("Servo 1 command aborted due to overcurrent.");
-            }
-            break;
-        }
-        case 181: { // Control Servo 2
-            Serial.print("Servo 2 commanded to angle: ");
-            Serial.println(servoAngle);
-            bool success = moveServoWithCurrentMonitoring(servo2, servo2CurrentAngle, servoAngle, servo2SensorPin);
-            if (!success) {
-                Serial.println("Servo 2 command aborted due to overcurrent.");
-            }
-            break;
-        }
-        default:
-            Serial.println("Unknown servo command");
-            break;
-    }
+  uint8_t servoIndex = command / 100; // De exemplu, 180 pentru Servo 1 sau 181 pentru Servo 2
+  uint8_t angle = command % 100;       // Unghiul țintă (0-99, folosit direct ca unghi)
+  uint8_t servoAngle = angle;
+  
+  switch (servoIndex) {
+    case 180:
+      moveServoWithCurrentMonitoring(servo1, servo1CurrentAngle, servoAngle, servo1SensorPin);
+      break;
+    case 181:
+      moveServoWithCurrentMonitoring(servo2, servo2CurrentAngle, servoAngle, servo2SensorPin);
+      break;
+    default:
+      break;
+  }
 }
 
 // ==================
-// I2C receive event handler (Unchanged)
+// (Funcția convertDebugHex a fost eliminată din modul debug, deoarece în modul debug 
+//  se dorește ca directia să fie preluată direct ca o valoare numerică 0-255.)
 // ==================
 
+// ==================
+// Handler pentru evenimentul I2C (receiveEvent)
+// ==================
 void receiveEvent(int howMany) {
-    while (howMany >= 3) {  // Process each {speed, direction} pair
-        uint8_t speed = Wire.read();          // Read speed (0-255)
-        uint16_t direction = (Wire.read() << 8);  // Read high byte of direction
-        direction |= Wire.read();             // Read low byte of direction
-        howMany -= 3;
-
-        // Print the speed, direction, and action
-        Serial.print("Speed: ");
-        Serial.print(speed);
-        Serial.print(" | Direction Code: ");
-        Serial.print(direction);
-        Serial.print(" | Direction: ");
-        Serial.println(getDirectionText(direction));
-
-        if (direction >= 180 && direction <= 189) {
-            handleServoCommand(direction);
-        } else {
-            // Set motor speed
-            setMotorSpeed(speed);
-            // Get the movement byte and update the shift register
-            byte movementByte = getMovementByte(direction);
-            updateShiftRegister(movementByte);
-        }
-
-        // Update the last command time
-        lastCommandTime = millis();
+  while (howMany >= 3) {
+    uint8_t speed = Wire.read();
+    uint8_t byte1 = Wire.read();
+    uint8_t byte2 = Wire.read();
+    howMany -= 3;
+    
+    // Verificare pentru comanda de toggle debug:
+    // Dacă viteza este 7 și cei doi octeți reprezintă caracterele '5' și '6'
+    if (speed == 7 && byte1 == '5' && byte2 == '6') {
+      debugMode = !debugMode;
+      continue;
     }
+    
+    if (debugMode) {
+      // În modul debug, se prelucrează comanda ca o valoare numerică (0-255)
+      // (se ignoră orice comandă legată de servomotoare)
+      uint16_t direction = (byte1 << 8) | byte2;
+      // Ne asigurăm că valoarea folosită este în intervalul 0-255:
+      byte debugByte = direction & 0xFF;
+      setMotorSpeed(speed);
+      updateShiftRegister(debugByte);
+    } else {
+      // În modul normal se prelucrează cei doi octeți ca valori numerice
+      uint16_t direction = (byte1 << 8) | byte2;
+      if (direction >= 180 && direction <= 189) {
+        handleServoCommand(direction);
+      } else {
+        setMotorSpeed(speed);
+        byte movementByte = getMovementByte(direction);
+        updateShiftRegister(movementByte);
+      }
+    }
+    lastCommandTime = millis();
+  }
 }
 
 // ==================
 // setup()
 // ==================
-
 void setup() {
-    // Initialize pins for shift register
-    pinMode(latchPin, OUTPUT);
-    pinMode(clockPin, OUTPUT);
-    pinMode(dataPin, OUTPUT);
-    pinMode(oePin, OUTPUT);
-    
-    // Initialize error pin
-    pinMode(errorPin, OUTPUT);
-    digitalWrite(errorPin, LOW);  // Set error line LOW initially
-
-    // Attach servos
-    servo1.attach(servo1Pin);
-    servo2.attach(servo2Pin);
-
-    // Initialize PWM with speed set to 0
-    analogWrite(oePin, 0);
-
-    // Initialize shift register to STOP
-    updateShiftRegister(0b00000000);
-
-    // Initialize I2C and Serial communication
-    Wire.begin(8);  // I2C address 8
-    Wire.onReceive(receiveEvent);
-    Serial.begin(9600);
-
-    // Set the initial last command time
-    lastCommandTime = millis();
+  // Inițializare pini pentru 74HC595
+  pinMode(latchPin, OUTPUT);
+  pinMode(clockPin, OUTPUT);
+  pinMode(dataPin, OUTPUT);
+  pinMode(oePin, OUTPUT);
+  
+  // Inițializare pin eroare
+  pinMode(errorPin, OUTPUT);
+  digitalWrite(errorPin, LOW);
+  
+  // Atașare servomotoare
+  servo1.attach(servo1Pin);
+  servo2.attach(servo2Pin);
+  
+  // Inițializare PWM (viteza 0)
+  analogWrite(oePin, 0);
+  
+  // Setare inițială a registrului de shift la STOP
+  updateShiftRegister(0b00000000);
+  
+  // Inițializare I2C la adresa 8 și setare handler pentru recepție
+  Wire.begin(8);
+  Wire.onReceive(receiveEvent);
+  
+  lastCommandTime = millis();
 }
 
 // ==================
 // loop()
 // ==================
-
 void loop() {
-    // Check for timeout for non-servo commands
-    if (millis() - lastCommandTime > TIMEOUT_MS) {
-        // Timeout reached, issue STOP command
-        setMotorSpeed(0);               // Set speed to 0
-        updateShiftRegister(0b00000000);  // Send STOP to shift register
-        // (Optional) Print timeout information
-        // Serial.println("Timeout: No command received. Stopping.");
-    }
-    delay(90);  // Main loop delay (data is handled in receiveEvent)
+  if (millis() - lastCommandTime > TIMEOUT_MS) {
+    setMotorSpeed(0);
+    updateShiftRegister(0b00000000);
+  }
+  delay(90);
 }
