@@ -1,106 +1,99 @@
 #include <Wire.h>
 #include <Servo.h>
 
-// ==================
-// 74HC595 Control
-// ==================
-int latchPin = 5;   // Conectat la RCLK (Pin 12 pe 74HC595)
-int clockPin = 6;   // Conectat la SRCLK (Pin 11 pe 74HC595)
-int dataPin = 4;    // Conectat la SER (Pin 14 pe 74HC595)
-int oePin = 3;      // Conectat la OE (Pin 13 pe 74HC595) - control PWM
+// ============================================================
+//          1. CONTROLUL SHIFT REGISTER & VARIABILE
+// ============================================================
 
-// ==================
-// Servo și Senzori
-// ==================
-int servo1Pin = 9;  // Pin PWM pentru Servo 1
-int servo2Pin = 10; // Pin PWM pentru Servo 2
+// Pini pentru 74HC595 (shift register)
+const int latchPin = 5;   // Conectat la RCLK (Pin 12 pe 74HC595)
+const int clockPin = 6;   // Conectat la SRCLK (Pin 11 pe 74HC595)
+const int dataPin = 4;    // Conectat la SER (Pin 14 pe 74HC595)
+const int oePin = 3;      // Conectat la OE (Pin 13 pe 74HC595) – folosit pentru controlul vitezei (PWM)
 
-Servo servo1;
-Servo servo2;
 
-const int servo1SensorPin = A1;  // Senzor curent Servo 1
-const int servo2SensorPin = A2;  // Senzor curent Servo 2
+const int LED7=7;
+const int LED8=8;
 
-const int errorPin = 2;  // Pin de semnalizare eroare
+bool ledState = LOW;
 
-// Unghiurile curente ale servomotoarelor
-int servo1CurrentAngle = 0;
-int servo2CurrentAngle = 0;
-
-// ==================
-// Configurare Timeout
-// ==================
-const unsigned long TIMEOUT_MS = 300;
-unsigned long lastCommandTime = 0;
-
-// ==================
-// Constante pentru monitorizarea curentului la servomotoare
-// ==================
-const float SERVO_FORWARD_THRESHOLD = 0.0100;
-const float SERVO_BACKWARD_THRESHOLD = 0.0100;
-
-// ==================
-// Mod Debug
-// ==================
-bool debugMode = false;
-
-// ==================
-// Funcții Utilitare
-// ==================
-
-// (Funcția getDirectionText este păstrată doar pentru referință internă.)
-const char* getDirectionText(uint8_t direction) {
-  switch(direction) {
-    case 0:  return "STOP";
-    case 1:  return "FORWARD";
-    case 2:  return "RIGHT";
-    case 3:  return "LEFT";
-    case 4:  return "SLIGHTLY RIGHT";
-    case 5:  return "SLIGHTLY LEFT";
-    case 6:  return "DIAGONAL RIGHT";
-    case 7:  return "DIAGONAL LEFT";
-    case 8:  return "HARD TURN LEFT";
-    case 9:  return "HARD TURN RIGHT";
-    case 10: return "LEFT ROTATE";
-    case 11: return "RIGHT ROTATE";
-    case 12: return "BACKWARD";
-    case 56: return "DEBUG_MODE";
-    default: return "UNKNOWN";
-  }
-}
-
-byte getMovementByte(uint8_t direction) {
-  switch(direction) {
-    case 0:  return 0b00000000; // STOP
-    case 1:  return 0b01010101; // FORWARD
-    case 2:  return 0b10010000; // RIGHT
-    case 3:  return 0b01100000; // LEFT
-    case 4:  return 0b00000110; // SLIGHTLY RIGHT
-    case 5:  return 0b00001001; // SLIGHTLY LEFT
-    case 6:  return 0b01000100; // DIAGONAL RIGHT
-    case 7:  return 0b10001000; // DIAGONAL LEFT
-    case 8:  return 0b00010100; // HARD TURN LEFT
-    case 9:  return 0b00101000; // HARD TURN RIGHT
-    case 10: return 0b01101001; // LEFT ROTATE
-    case 11: return 0b10010110; // RIGHT ROTATE
-    case 12: return 0b10101010; // BACKWARD
-    default: return 0b00000000; // Implicit STOP
-  }
-}
-
+// Funcție: updateShiftRegister
+// Trimite un byte către registrul de shift pentru a controla direcția mișcării.
 void updateShiftRegister(byte data) {
   digitalWrite(latchPin, LOW);
   shiftOut(dataPin, clockPin, MSBFIRST, data);
   digitalWrite(latchPin, HIGH);
 }
 
+// Funcție: setMotorSpeed
+// Setează viteza motorului prin PWM pe pinul OE.
 void setMotorSpeed(uint8_t speed) {
   analogWrite(oePin, speed);
 }
 
-// ==================
-// Funcție pentru citirea senzorului de curent
-// ==================
+// Funcție: getMovementByte
+// Maparea unei comenzi (direction) la codul binar corespunzător mișcării.
+uint8_t getMovementByte(uint8_t direction) {
+  switch(direction) {
+    case 0:  return 0b00000000; // STOP
+    case 1:  return 0b01010101; // INAINTE (FORWARD)
+    case 2:  return 0b10101010; // INAPOI (BACKWARD)
+    case 3:  return 0b00001001; // DREAPTA-FATA (FRONT-RIGHT)
+    case 4:  return 0b00000110; // STANGA-FATA (FRONT-LEFT)
+    case 5:  return 0b10010000; // spatele se misca in dreapta (BACK-RIGHT)
+    case 6:  return 0b01100000; // spatele se misca in stanga (BACK-LEFT)
+    case 7:  return 0b01101001; // ROTIRE DREAPTA (ROTATE RIGHT)
+    case 8:  return 0b10010110; // ROTIRE STANGA (ROTATE LEFT)
+    case 9:  return 0b10011001; // LATERALA DREAPTA (SIDE-RIGHT)
+    case 10: return 0b01100110; // LATERALA STANGA (SIDE-LEFT)
+    case 11: return 0b01000001; // hard turn dreapta (HARD RIGHT TURN)
+    case 12: return 0b00010100; // hard turn stanga (HARD LEFT TURN)
+    case 13: return 0b10000010; // hard turn stanga miscare spate inapoi
+    case 14: return 0b00101000; // hard turn dreapta miscare spate inapoi
+    case 15: return 0b00010001; // diagonala stanga fata (DIAGONAL FRONT-LEFT)
+    case 16: return 0b00100010; // diagonala spate dreapta (DIAGONAL BACK-RIGHT)
+    case 17: return 0b01000100; // diagonala dreapta fata (DIAGONAL FRONT-RIGHT)
+    case 18: return 0b10001000; // diagonala spate stanga (DIAGONAL BACK-LEFT)
+
+      //SPECIAL CASE 
+
+    case 19: return 0b00000001; // little to left (o singura roata)
+    case 20: return 0b00000010; // little to right (o singura roata)
+
+    default: return 0b00000000; // STOP implicit
+  }
+}
+
+
+// ============================================================
+//          2. CONTROLUL SERVOMOTOARELOR ȘI SENSORI
+// ============================================================
+
+// Pini și obiecte pentru servomotoare
+int servo1Pin = 9;   // Pin PWM pentru Servo 1
+int servo2Pin = 10;  // Pin PWM pentru Servo 2
+
+Servo servo1;
+Servo servo2;
+
+// Pini pentru senzorii de curent aferenți servomotoarelor
+const int servo1SensorPin = A1;  // Senzor curent Servo 1
+const int servo2SensorPin = A2;  // Senzor curent Servo 2
+
+// Pin pentru semnalizarea erorilor
+const int errorPin = 2;  // LED sau semnal de eroare
+
+// Unghiurile curente ale servomotoarelor
+int servo1CurrentAngle = 0;
+int servo2CurrentAngle = 0;
+
+
+// ------------------------------------------------------------
+// 2.1 Citirea curentului (Current Sensor Reading)
+// ------------------------------------------------------------
+
+// Funcție: readCurrentSensor
+// Citește valoarea analogică de la un senzor, calculează media și determină curentul.
 float readCurrentSensor(int sensorPin) {
   float samples = 0.0, avgVal = 0.0, currentVal = 0.0;
   float minVal = 1023, maxVal = 0;  
@@ -110,15 +103,27 @@ float readCurrentSensor(int sensorPin) {
     if (sample < minVal) minVal = sample;
     if (sample > maxVal) maxVal = sample;
   }
+  // Excludem cele mai mici și cele mai mari valori
   samples -= (minVal + maxVal);
-  avgVal = samples / 498.0;  
-  currentVal = (2.5 - (avgVal * (5.0 / 1024.0))) / 0.185;  
+  avgVal = samples / 498.0;
+  // Calculăm curentul pe baza tensiunii medii
+  currentVal = (2.5 - (avgVal * (5.0 / 1024.0))) / 0.185;
   return currentVal;
 }
 
-// ==================
-// Mișcarea servo cu monitorizarea curentului
-// ==================
+// Pragurile de curent pentru monitorizarea servomotoarelor
+const float SERVO_FORWARD_THRESHOLD = 0.0100;
+const float SERVO_BACKWARD_THRESHOLD = 0.0100;
+
+
+// ------------------------------------------------------------
+// 2.2 Mișcarea servomotoarelor cu monitorizarea curentului
+// ------------------------------------------------------------
+
+// Funcție: moveServoWithCurrentMonitoring
+// Mișcă un servo de la un unghi curent către un unghi țintă,
+// monitorizând curentul. Dacă curentul depășește un prag, servo-ul se retrage
+// și încearcă din nou, de un număr limitat de ori.
 bool moveServoWithCurrentMonitoring(Servo &servo, int &currentAngle, int targetAngle, int sensorPin) {
   int tries = 0;
   const int maxTries = 4;
@@ -141,7 +146,7 @@ bool moveServoWithCurrentMonitoring(Servo &servo, int &currentAngle, int targetA
         currentAngle = angle;
         if (currentAngle == targetAngle) return true;
       }
-    } else { // Mișcare inversă
+    } else { // Mișcare înapoi
       for (int angle = currentAngle; angle >= targetAngle; angle -= stepSize) {
         if (angle < targetAngle) angle = targetAngle;
         servo.write(angle);
@@ -158,6 +163,7 @@ bool moveServoWithCurrentMonitoring(Servo &servo, int &currentAngle, int targetA
     
     if (thresholdTriggered) {
       tries++;
+      // Retragere pentru a reduce curentul înainte de a încerca din nou
       if (movingForward) {
         currentAngle = max(currentAngle - retractDegrees, 0);
       } else {
@@ -168,6 +174,7 @@ bool moveServoWithCurrentMonitoring(Servo &servo, int &currentAngle, int targetA
     }
   }
   
+  // Dacă s-au epuizat încercările, se semnalează eroarea
   if (tries >= maxTries) {
     currentAngle = 0;
     servo.write(0);
@@ -178,34 +185,52 @@ bool moveServoWithCurrentMonitoring(Servo &servo, int &currentAngle, int targetA
   return true;
 }
 
-// ==================
-// Handler pentru comenzile servo
-// ==================
+
+// ------------------------------------------------------------
+// 2.3 Handler pentru comenzile servomotoarelor
+// ------------------------------------------------------------
+
+// Funcție: handleServoCommand
+// Procesează comanda primită pentru servomotoare. Comanda este un număr
+// de 3 cifre: primele 2 cifre indică indexul servo-ului (ex. 180 pentru servo1, 181 pentru servo2),
+// iar ultima cifră reprezintă unghiul țintă.
 void handleServoCommand(uint16_t command) {
-  uint8_t servoIndex = command / 100; // De exemplu, 180 pentru Servo 1 sau 181 pentru Servo 2
-  uint8_t angle = command % 100;       // Unghiul țintă (0-99, folosit direct ca unghi)
-  uint8_t servoAngle = angle;
+  uint8_t servoIndex = command / 100; // Ex: 180 pentru Servo 1, 181 pentru Servo 2
+  uint8_t angle = command % 100;       // Unghiul țintă (0-99)
   
   switch (servoIndex) {
     case 180:
-      moveServoWithCurrentMonitoring(servo1, servo1CurrentAngle, servoAngle, servo1SensorPin);
+      moveServoWithCurrentMonitoring(servo1, servo1CurrentAngle, angle, servo1SensorPin);
       break;
     case 181:
-      moveServoWithCurrentMonitoring(servo2, servo2CurrentAngle, servoAngle, servo2SensorPin);
+      moveServoWithCurrentMonitoring(servo2, servo2CurrentAngle, angle, servo2SensorPin);
       break;
     default:
       break;
   }
 }
 
-// ==================
-// (Funcția convertDebugHex a fost eliminată din modul debug, deoarece în modul debug 
-//  se dorește ca directia să fie preluată direct ca o valoare numerică 0-255.)
-// ==================
 
-// ==================
-// Handler pentru evenimentul I2C (receiveEvent)
-// ==================
+// ============================================================
+//          3. COMUNICAREA PRIN I2C & PRELUCRAREA DATELOR
+// ============================================================
+
+// Mod debug – dacă activ, comenzile sunt preluate ca valori numerice brute (0-255)
+bool debugMode = false;
+
+// Variabilă pentru gestionarea timeout-ului (oprirea mașinii în lipsa unei comenzi)
+const unsigned long TIMEOUT_MS = 300;
+unsigned long lastCommandTime = 0;
+
+// Funcție: receiveEvent
+// Aceasta este funcția handler apelată la recepția datelor I2C.
+// Formatul datelor primite: 3 octeți
+//   - Primul octet reprezintă viteza (PWM).
+//   - Următorii doi octeți reprezintă comanda direcției sau comanda pentru servomotoare.
+// În modul debug, comanda este interpretată ca o valoare 0-255 directă.
+// În modul normal:
+//   - Dacă valoarea combinată se află între 180 și 189, se procesează ca o comandă de servomotor.
+//   - Altfel, se procesează ca o comandă de mișcare.
 void receiveEvent(int howMany) {
   while (howMany >= 3) {
     uint8_t speed = Wire.read();
@@ -213,74 +238,110 @@ void receiveEvent(int howMany) {
     uint8_t byte2 = Wire.read();
     howMany -= 3;
     
+    // Se formează un număr de 16 biți din cei doi octeți pentru a reprezenta direcția/servomotorul.
+    uint16_t direction = (byte1 << 8) | byte2;
+    
     // Verificare pentru comanda de toggle debug:
-    // Dacă viteza este 7 și cei doi octeți reprezintă caracterele '5' și '6'
-    if (speed == 7 && byte1 == '5' && byte2 == '6') {
+    // Dacă speed este 7 și direcția este egală cu 56, se activează/dezactivează modul debug.
+    if (speed == 255 && direction == 255) {
+
+      ledState = !ledState;
+      digitalWrite(LED7, ledState);
       debugMode = !debugMode;
       continue;
     }
     
     if (debugMode) {
-      // În modul debug, se prelucrează comanda ca o valoare numerică (0-255)
-      // (se ignoră orice comandă legată de servomotoare)
-      uint16_t direction = (byte1 << 8) | byte2;
-      // Ne asigurăm că valoarea folosită este în intervalul 0-255:
-      byte debugByte = direction & 0xFF;
+      // În modul debug, comanda este prelucrată direct ca o valoare numerică (0-255)
+      byte debugByte = direction & 0xFF; // Se folosește doar un octet
       setMotorSpeed(speed);
+      digitalWrite(LED8, HIGH);
+      delay(50);
+      digitalWrite(LED8, LOW);
       updateShiftRegister(debugByte);
+
+      delay(400);
+      updateShiftRegister(0b00000000);
     } else {
-      // În modul normal se prelucrează cei doi octeți ca valori numerice
-      uint16_t direction = (byte1 << 8) | byte2;
-      if (direction >= 180 && direction <= 189) {
-        handleServoCommand(direction);
-      } else {
+
+      // În modul normal se prelucrează comenzile în funcție de valoare:
+      if ( direction <= 20) {
+        // Comandă pentru mișcarea mașinii
         setMotorSpeed(speed);
         byte movementByte = getMovementByte(direction);
         updateShiftRegister(movementByte);
+        lastCommandTime = millis();
       }
+
+       else if (direction >= 180 && direction <= 189) {
+        // Comandă pentru servomotoare
+        handleServoCommand(direction);
+        
+
+
+      } 
+
     }
-    lastCommandTime = millis();
+    // Resetăm temporizatorul la fiecare comandă primită
+    
   }
 }
 
-// ==================
-// setup()
-// ==================
+
+// ============================================================
+//          4. FUNCȚIILE PRINCIPALE: SETUP ȘI LOOP
+// ============================================================
+
 void setup() {
-  // Inițializare pini pentru 74HC595
+  // ------------------------------
+  // 4.1 Inițializare pini pentru 74HC595 (shift register)
+  // ------------------------------
   pinMode(latchPin, OUTPUT);
   pinMode(clockPin, OUTPUT);
   pinMode(dataPin, OUTPUT);
   pinMode(oePin, OUTPUT);
   
-  // Inițializare pin eroare
+
+  pinMode(LED7, OUTPUT);
+  pinMode(LED8, OUTPUT);
+  // ------------------------------
+  // 4.2 Inițializare pin pentru eroare
+  // ------------------------------
   pinMode(errorPin, OUTPUT);
   digitalWrite(errorPin, LOW);
   
-  // Atașare servomotoare
+  // ------------------------------
+  // 4.3 Atașarea servomotoarelor
+  // ------------------------------
   servo1.attach(servo1Pin);
   servo2.attach(servo2Pin);
   
-  // Inițializare PWM (viteza 0)
+  // ------------------------------
+  // 4.4 Inițializare PWM (viteza = 0)
+  // ------------------------------
   analogWrite(oePin, 0);
   
-  // Setare inițială a registrului de shift la STOP
+  // Setăm registrul de shift la valoarea STOP (0b00000000)
   updateShiftRegister(0b00000000);
   
-  // Inițializare I2C la adresa 8 și setare handler pentru recepție
-  Wire.begin(8);
-  Wire.onReceive(receiveEvent);
+  // ------------------------------
+  // 4.5 Inițializare comunicație I2C
+  // ------------------------------
+  Wire.begin(8);              // Adresa I2C a dispozitivului
+  Wire.onReceive(receiveEvent); // Setăm handler-ul pentru recepția datelor I2C
   
+  // Inițializare temporizator pentru comenzi
   lastCommandTime = millis();
 }
 
-// ==================
-// loop()
-// ==================
 void loop() {
+  // ------------------------------
+  // 4.6 Timeout: Dacă nu se primește nicio comandă timp de TIMEOUT_MS,
+  // se oprește mașina (viteza = 0 și registru de shift la STOP)
+  // ------------------------------
   if (millis() - lastCommandTime > TIMEOUT_MS) {
     setMotorSpeed(0);
     updateShiftRegister(0b00000000);
   }
-  delay(90);
+  delay(90);  // Mică întârziere pentru reducerea utilizării CPU
 }
