@@ -1,0 +1,145 @@
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+
+#define PCA9685_ADDRESS 0x40
+#define SLAVE_ADDRESS   0x08
+
+// Create the PCA9685 object using the Adafruit library.
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(PCA9685_ADDRESS);
+
+// Global variables to hold received data
+volatile bool dataReceived = false;
+volatile uint16_t receivedMask = 0;
+volatile uint16_t receivedValues[16]; // Up to 16 values if all channels active
+volatile uint8_t receivedNumValues = 0;
+unsigned long lastReceiveTime = 0;
+
+//--------------------------------------------------
+// Function: setMultiplePWM
+// Purpose: Update the PCA9685 channels based on a 16-bit mask
+//          and an array of PWM values for the active channels.
+// Parameters:
+//   - mask: 16-bit bitmask indicating active channels (e.g., 0x00FF for channels 0–7).
+//   - pwmValues: Array of PWM values (0–4095) for the active channels,
+//                in order from lowest-numbered active channel upward.
+//   - numValues: Number of PWM values in the array.
+// For channels not active in the mask, the PWM value is set to 0.
+//--------------------------------------------------
+void setMultiplePWM(uint16_t mask, uint16_t *pwmValues, uint8_t numValues) {
+  uint16_t data[16];  // Complete array for 16 channels
+  uint8_t valueIndex = 0;
+  
+  // Build a complete 16-channel array based on the mask and provided values.
+  for (uint8_t ch = 0; ch < 16; ch++) {
+    if (mask & (1 << ch)) {  // Channel is active
+      if (valueIndex < numValues) {
+        data[ch] = pwmValues[valueIndex++];
+      } else {
+        data[ch] = 0;  // If not enough values provided, default to 0.
+      }
+    } else {
+      data[ch] = 0;  // Channel not active, so set PWM to 0.
+    }
+  }
+  
+  // Update each channel via the Adafruit library.
+  for (uint8_t ch = 0; ch < 16; ch++) {
+    uint16_t offVal = data[ch];
+    if (offVal == 0) {
+      pwm.setPWM(ch, 0, 0);
+    } else {
+      pwm.setPWM(ch, 0, offVal);
+    }
+  }
+}
+
+//--------------------------------------------------
+// I2C Slave receive event handler
+// Packet structure (big-endian):
+//   - First 2 bytes: mask (16-bit)
+//   - Next (N x 2) bytes: PWM values for the N active channels (N = count of set bits in mask)
+//--------------------------------------------------
+void receiveEvent(int numBytes) {
+  if (numBytes < 2) return; // Not enough data for mask
+
+  // Read the mask (big-endian)
+  uint8_t highByte = Wire.read();
+  uint8_t lowByte  = Wire.read();
+  uint16_t mask = ((uint16_t)highByte << 8) | lowByte;
+  
+  // Count the number of active channels (set bits in mask)
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < 16; i++) {
+    if (mask & (1 << i)) count++;
+  }
+  
+  // Verify that the received bytes match the expected packet size.
+  if (numBytes != (2 + count * 2))
+    return; // Packet size mismatch, ignore this packet.
+  
+  uint16_t values[16];  // Temporary array for PWM values.
+  for (uint8_t i = 0; i < count; i++) {
+    uint8_t hb = Wire.read();
+    uint8_t lb = Wire.read();
+    values[i] = ((uint16_t)hb << 8) | lb;
+  }
+  
+  // Update the global variables atomically.
+  noInterrupts();
+  receivedMask = mask;
+  receivedNumValues = count;
+  for (uint8_t i = 0; i < count; i++) {
+    receivedValues[i] = values[i];
+  }
+  dataReceived = true;
+  lastReceiveTime = millis();
+  interrupts();
+}
+
+void setup() {
+  // Set up Arduino as I2C slave with address SLAVE_ADDRESS (0x08)
+  Wire.begin(SLAVE_ADDRESS);
+  Wire.onReceive(receiveEvent);
+  
+  Serial.begin(9600);
+  Serial.println("Arduino I2C Slave Ready");
+  
+  // Initialize PCA9685 using the Adafruit library.
+  pwm.begin();
+  // Although as slave we don't control the clock, setWire clock to 400 kHz in case it's used on the master side.
+  Wire.setClock(400000);
+  
+  // Set the PWM frequency (e.g., 1000 Hz for LED tests).
+  pwm.setPWMFreq(1000);
+  
+  // Initially, turn off all PCA9685 channels.
+  setMultiplePWM(0x0000, NULL, 0);
+  lastReceiveTime = millis();
+}
+
+void loop() {
+  // If new data is received, update the PCA9685.
+  if (dataReceived) {
+    noInterrupts();
+    uint16_t mask = receivedMask;
+    uint8_t numVal = receivedNumValues;
+    uint16_t localValues[16];
+    for (uint8_t i = 0; i < numVal; i++) {
+      localValues[i] = receivedValues[i];
+    }
+    dataReceived = false;
+    interrupts();
+    
+    Serial.print("Received packet: mask=0x");
+    Serial.print(mask, HEX);
+    Serial.print(", numValues=");
+    Serial.println(numVal);
+    
+    setMultiplePWM(mask, localValues, numVal);
+  }
+  
+  // If no new data is received for more than 3 seconds, turn off all outputs.
+  if (millis() - lastReceiveTime > 3000) {
+    setMultiplePWM(0x0000, NULL, 0);
+  }
+}
