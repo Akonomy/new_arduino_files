@@ -1,0 +1,107 @@
+#include <Servo.h>
+
+// Declare two Servo objects on pins 10 and 11
+Servo servo10;  // Test servo (will be moved from min to max)
+Servo servo11;  // Second servo (can be used for other functions)
+
+// Global variable for servo10 current angle
+int currentAngle = 150;  
+
+// Function to take 150 samples from analog pin A0, compute the average,
+// convert it to a current value, and then return the absolute current value.
+float measureCurrent() {
+  unsigned int x=0;
+float AcsValue=0.0,Samples=0.0,AvgAcs=0.0,AcsValueF=0.0;
+
+  for (int x = 0; x < 50; x++){ //Get 150 samples
+  AcsValue = analogRead(A0);     //Read current sensor values   
+  Samples = Samples + AcsValue;  //Add samples together
+  delay (2); // let ADC settle before next sample 3ms
+}
+AvgAcs=Samples/50.0;//Taking Average of Samples
+
+//((AvgAcs * (5.0 / 1024.0)) is converitng the read voltage in 0-5 volts
+//2.5 is offset(I assumed that arduino is working on 5v so the viout at no current comes
+//out to be 2.5 which is out offset. If your arduino is working on different voltage than 
+//you must change the offset according to the input voltage)
+//0.185v(185mV) is rise in output voltage when 1A current flows at input
+AcsValueF = (2.5 - (AvgAcs * (5.0 / 1024.0)) )/0.185;
+  return AcsValueF;
+}
+
+// Function to increment servo10 by 2° if not already at the maximum (180°),
+// then measure and print the current as a single packaged message.
+void increaseServoBy2() {
+  if (currentAngle < 180) {
+    currentAngle += 4;
+    servo10.write(currentAngle);
+     // Allow time for the servo to move
+    float currentVal = measureCurrent();
+    
+ 
+    Serial.println(  currentVal);
+    
+  }
+}
+
+// Function to decrement servo10 by 2° if not already at the minimum (0°),
+// then measure and print the current as a single packaged message.
+void decreaseServoBy2() {
+  if (currentAngle > 0) {
+    currentAngle -= 2;
+    servo10.write(currentAngle);
+    delay(20);  // Allow time for the servo to move
+    float currentVal = measureCurrent();
+    
+    
+    Serial.println(  currentVal);
+    
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  
+  // Attach servos to pins 10 and 11
+  servo10.attach(10);
+  servo11.attach(11);
+  
+  // Set test servo (on pin 10) initially to 150°
+  currentAngle = 150;
+  servo10.write(currentAngle);
+  delay(500);  // Give servo time to reach its initial position
+  
+  Serial.println("Init phase: Servo set to 150°");
+  
+  // (Optional) Set servo11 to a default value if needed:
+  servo11.write(90);
+}
+
+bool firstPhaseDone = false;  // flag for phase 1 (decreasing)
+bool secondPhaseDone = false; // flag for phase 2 (increasing)
+
+void loop() {
+  // Phase 1: Move servo10 from 150° down to 30° by decreasing 2° each step
+  if (!firstPhaseDone) {
+    if (currentAngle > 1) {
+      decreaseServoBy2();
+    } else {
+      firstPhaseDone = true;
+    
+      delay(500);
+    }
+  }
+  // Phase 2: Move servo10 from 30° up to 180° by increasing 2° each step
+  else if (!secondPhaseDone) {
+    if (currentAngle < 180) {
+      increaseServoBy2();
+    } else {
+      secondPhaseDone = true;
+      
+    }
+  }
+  
+  // Once both phases are done, stop looping.
+  // (You could also restart the test by resetting the flags if desired.)
+  delay(50);
+}
