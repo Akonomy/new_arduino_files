@@ -4,8 +4,17 @@
 Servo servo10;  // Test servo (will be moved from min to max)
 Servo servo11;  // Second servo (can be used for other functions)
 
+const float negativeCoefficient = 1;  // Amplificare negativă pentru valori între 0 și 0.4
+const float normalCoefficient   = 1;   // Amplificare normală pentru valori între 0.5 și 0.7
+const float highAmplification   = 2.0;   // Amplificare de 2 pentru valori > 0.7
+
+const int numValues = 5;        // numărul de valori de păstrat
+float currentValues[numValues] = {0}; // buffer pentru ultimele 4 valori
+int index = 0;                  // indexul curent în buffer
+bool bufferFilled = false;      // indică dacă bufferul a fost complet ump
+
 // Global variable for servo10 current angle
-int currentAngle = 150;  
+int currentAngle = 140;  
 
 // Function to take 150 samples from analog pin A0, compute the average,
 // convert it to a current value, and then return the absolute current value.
@@ -13,12 +22,12 @@ float measureCurrent() {
   unsigned int x=0;
 float AcsValue=0.0,Samples=0.0,AvgAcs=0.0,AcsValueF=0.0;
 
-  for (int x = 0; x < 50; x++){ //Get 150 samples
+  for (int x = 0; x < 20; x++){ //Get 150 samples
   AcsValue = analogRead(A0);     //Read current sensor values   
   Samples = Samples + AcsValue;  //Add samples together
   delay (2); // let ADC settle before next sample 3ms
 }
-AvgAcs=Samples/50.0;//Taking Average of Samples
+AvgAcs=Samples/20.0;//Taking Average of Samples
 
 //((AvgAcs * (5.0 / 1024.0)) is converitng the read voltage in 0-5 volts
 //2.5 is offset(I assumed that arduino is working on 5v so the viout at no current comes
@@ -32,30 +41,88 @@ AcsValueF = (2.5 - (AvgAcs * (5.0 / 1024.0)) )/0.185;
 // Function to increment servo10 by 2° if not already at the maximum (180°),
 // then measure and print the current as a single packaged message.
 void increaseServoBy2() {
-  if (currentAngle < 180) {
-    currentAngle += 4;
-    servo10.write(currentAngle);
-     // Allow time for the servo to move
-    float currentVal = measureCurrent();
+  if (currentAngle < 177) {
+    currentAngle += 3;
+  servo10.write(currentAngle);
+
+    // Măsurăm curentul și păstrăm doar valoarea absolută
+    float measured = measureCurrent();
+    float currentVal = (measured < 0) ? -measured : measured;
+
+    currentVal = amplifyValue(currentVal);
+
+
     
- 
-    Serial.println(  currentVal);
-    
+
+    // Salvăm valoarea în buffer-ul global
+    currentValues[index] = currentVal;
+    index = (index + 1) % numValues;
+    if (index == 0) {
+      bufferFilled = true;
+    }
+
+    // Calculăm media valorilor din buffer
+    int count = bufferFilled ? numValues : index;
+    float sum = 0;
+    for (int i = 0; i < count; i++) {
+      sum += currentValues[i];
+    }
+    float avg = sum / count;
+
+    // Calculăm diferența absolută între currentVal și medie
+    float diff = (currentVal >= avg) ? (currentVal - avg) : (avg - currentVal);
+
+    // Printează valoarea curentă, media și diferența
+   diff*=4;
+    Serial.print(currentVal);
+Serial.print(" ");
+    Serial.println(diff);
+
+        if (currentVal>=0.26 ){
+
+      currentAngle=20;
+servo10.write(currentAngle);
+delay(30);
+
+        }
+
   }
 }
 
+float amplifyValue(float currentVal) {
+  float amplified;
+  
+  if (currentVal >= 0.0 && currentVal <= 0.4) {
+    // Valori între 0 și 0.4 sunt amplificate cu coeficient negativ
+    amplified = currentVal * negativeCoefficient;
+  } 
+  else if (currentVal >= 0.5 && currentVal <= 0.7) {
+    // Valori între 0.5 și 0.7 sunt amplificate cu coeficient normal
+    amplified = currentVal * normalCoefficient;
+  } 
+  else if (currentVal > 0.7) {
+    // Valorile care depășesc 0.7 sunt amplificate cu 2
+    amplified = currentVal * highAmplification;
+  } 
+  else {
+    // Pentru orice alte cazuri (de exemplu, între 0.4 și 0.5 sau valori negative)
+    amplified = currentVal; // se lasă nemodificată
+  }
+  
+  return amplified;
+}
+
+
+
 // Function to decrement servo10 by 2° if not already at the minimum (0°),
 // then measure and print the current as a single packaged message.
+
 void decreaseServoBy2() {
   if (currentAngle > 0) {
-    currentAngle -= 2;
+    currentAngle -= 4;
     servo10.write(currentAngle);
-    delay(20);  // Allow time for the servo to move
-    float currentVal = measureCurrent();
-    
-    
-    Serial.println(  currentVal);
-    
+
+delay(1);
   }
 }
 
@@ -67,7 +134,7 @@ void setup() {
   servo11.attach(11);
   
   // Set test servo (on pin 10) initially to 150°
-  currentAngle = 150;
+  currentAngle = 15;
   servo10.write(currentAngle);
   delay(500);  // Give servo time to reach its initial position
   
@@ -83,7 +150,7 @@ bool secondPhaseDone = false; // flag for phase 2 (increasing)
 void loop() {
   // Phase 1: Move servo10 from 150° down to 30° by decreasing 2° each step
   if (!firstPhaseDone) {
-    if (currentAngle > 1) {
+    if (currentAngle > 4) {
       decreaseServoBy2();
     } else {
       firstPhaseDone = true;
@@ -93,7 +160,7 @@ void loop() {
   }
   // Phase 2: Move servo10 from 30° up to 180° by increasing 2° each step
   else if (!secondPhaseDone) {
-    if (currentAngle < 180) {
+    if (currentAngle < 155) {
       increaseServoBy2();
     } else {
       secondPhaseDone = true;
@@ -103,5 +170,7 @@ void loop() {
   
   // Once both phases are done, stop looping.
   // (You could also restart the test by resetting the flags if desired.)
-  delay(50);
+  delay(100);
+
 }
+
