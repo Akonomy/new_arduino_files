@@ -1,0 +1,227 @@
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+
+#define PCA9685_ADDRESS 0x40
+#define SLAVE_ADDRESS   0x08
+#define OE_PIN          5        // Pinul pentru Output Enable
+#define REFRESH_TIMEOUT 200      // Timeout în ms pentru refresh
+
+// Activează modul de testare pentru a folosi testCase (definiți TEST_MODE pentru a-l activa)
+#define TEST_MODE
+
+// Create the PCA9685 object using the Adafruit library.
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(PCA9685_ADDRESS);
+
+// Global variables to hold received data
+volatile bool dataReceived = false;
+volatile uint16_t receivedMask = 0;
+volatile uint16_t receivedValues[16]; // Up to 16 values if all channels active
+volatile uint8_t receivedNumValues = 0;
+unsigned long lastReceiveTime = 0;
+
+//--------------------------------------------------
+// Function: setMultiplePWM
+// Purpose: Update the PCA9685 channels based on a 16-bit mask
+//          and an array of PWM values for the active channels.
+// Parameters:
+//   - mask: 16-bit bitmask indicating active channels (e.g., 0x00FF for channels 0–7).
+//   - pwmValues: Array of PWM values (0–4095) for the active channels,
+//                in order from lowest-numbered active channel upward.
+//   - numValues: Number of PWM values in the array.
+// For channels not active in the mask, the PWM value is set to 0.
+//--------------------------------------------------
+void setMultiplePWM(uint16_t mask, uint16_t *pwmValues, uint8_t numValues) {
+  uint16_t data[16];  // Complete array for 16 channels
+  uint8_t valueIndex = 0;
+  
+  // Build a complete 16-channel array based on the mask and provided values.
+  for (uint8_t ch = 0; ch < 16; ch++) {
+    if (mask & (1 << ch)) {  // Channel is active
+      if (valueIndex < numValues) {
+        data[ch] = pwmValues[valueIndex++];
+      } else {
+        data[ch] = 0;  // If not enough values provided, default to 0.
+      }
+    } else {
+      data[ch] = 0;  // Channel not active, so set PWM to 0.
+    }
+  }
+  
+  // Update each channel via the Adafruit library.
+  for (uint8_t ch = 0; ch < 16; ch++) {
+    uint16_t offVal = data[ch];
+    if (offVal == 0) {
+      pwm.setPWM(ch, 0, 0);
+    } else {
+      pwm.setPWM(ch, 0, offVal);
+    }
+  }
+}
+
+//--------------------------------------------------
+// I2C Slave receive event handler
+// Packet structure (big-endian):
+//   - First 2 bytes: mask (16-bit)
+//   - Next (N x 2) bytes: PWM values for the N active channels.
+//     Se poate trimite fie un singur set de 2 bytes (care va fi aplicat tuturor canalelor active),
+//     fie se trimit 2 bytes pentru fiecare canal activ (N = count of set bits in mask).
+//
+// De asemenea se verifică ca, pentru canalele 0-7, pe grupuri de câte 2 (0-1,2-3,4-5,6-7),
+// să nu fie ambele active (ex. 11 este invalid).
+// Dacă se detectează o astfel de situație, se activează comanda stop.
+//--------------------------------------------------
+void receiveEvent(int numBytes) {
+  if (numBytes < 2) return; // Not enough data for mask
+
+  // Read the mask (big-endian)
+  uint8_t highByte = Wire.read();
+  uint8_t lowByte  = Wire.read();
+  uint16_t mask = ((uint16_t)highByte << 8) | lowByte;
+  
+  // Verificare restricție pentru primele 8 pini: în grupuri de 2, nu pot fi ambele 1.
+  for (uint8_t i = 0; i < 8; i += 2) {
+    if ((mask & (0x3 << i)) == (0x3 << i)) {
+      // Mască invalidă: doi biți consecutivi activi în intervalul 0-7. Se activează comanda stop.
+      digitalWrite(OE_PIN, HIGH);  // Dezactivează ieșirile
+      setMultiplePWM(0x0000, NULL, 0);
+    
+      return; // Ignoră acest pachet.
+    }
+  }
+  
+  // Numără canalele active
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < 16; i++) {
+    if (mask & (1 << i)) count++;
+  }
+  
+  // Se determină tipul pachetului:
+  // - Single value: 2 (mask) + 2 (o valoare) = 4 bytes, care se aplică tuturor canalelor active.
+  // - Multiple values: 2 + (count * 2) bytes.
+  bool singleValuePacket = false;
+  if (numBytes == 4 && count > 1) {
+    singleValuePacket = true;
+  } else if (numBytes != (2 + count * 2)) {
+    // Dimensiunea pachetului nu corespunde nici uneia din așteptări.
+    return;
+  }
+  
+  uint16_t values[16]; // Valori temporare pentru PWM.
+  if (singleValuePacket) {
+    // Citește o singură valoare și o aplică tuturor canalelor active.
+    uint8_t hb = Wire.read();
+    uint8_t lb = Wire.read();
+    uint16_t singleValue = ((uint16_t)hb << 8) | lb;
+    for (uint8_t i = 0; i < count; i++) {
+      values[i] = singleValue;
+    }
+  } else {
+    // Citește valorile pentru fiecare canal activ.
+    for (uint8_t i = 0; i < count; i++) {
+      uint8_t hb = Wire.read();
+      uint8_t lb = Wire.read();
+      values[i] = ((uint16_t)hb << 8) | lb;
+    }
+  }
+  
+  // Înainte de a aplica noile date, re-activează ieșirile (OE LOW).
+  digitalWrite(OE_PIN, LOW);
+  
+  // Actualizează variabilele globale în mod atomic.
+  noInterrupts();
+  receivedMask = mask;
+  receivedNumValues = count;
+  for (uint8_t i = 0; i < count; i++) {
+    receivedValues[i] = values[i];
+  }
+  dataReceived = true;
+  lastReceiveTime = millis();
+  interrupts();
+}
+
+#ifdef TEST_MODE
+//--------------------------------------------------
+// Test case: trimite periodic o mască cu un singur pin activ în intervalul 0-7,
+// aplicând valoarea 2048 (valoarea de mijloc).
+// Se activează pe rând pinul 0, apoi 1, apoi 2 etc.
+//--------------------------------------------------
+void testCase() {
+  static uint8_t currentPin = 0;
+  // Construiește masca: activează doar pinul curent.
+  uint16_t mask = (1 << currentPin);
+  uint16_t value = 2500;
+  
+  // Simulează recepția pachetului (packet format: mask + o singură valoare).
+  noInterrupts();
+  receivedMask = mask;
+  receivedNumValues = 1; // o singură valoare
+  receivedValues[0] = value;
+  dataReceived = true;
+  lastReceiveTime = millis();
+  interrupts();
+  
+  Serial.print("Test case: activare pin ");
+  Serial.println(currentPin);
+  currentPin = (currentPin + 1) % 8;
+}
+#endif
+
+void setup() {
+  // Set up Arduino as I2C slave with address SLAVE_ADDRESS (0x08)
+  Wire.begin(SLAVE_ADDRESS);
+  Wire.onReceive(receiveEvent);
+  
+  Serial.begin(9600);
+
+  
+  // Set up OE pin as output and set it LOW (ieșirile active)
+  pinMode(OE_PIN, OUTPUT);
+  digitalWrite(OE_PIN, LOW);
+  
+  // Initialize PCA9685 using the Adafruit library.
+  pwm.begin();
+  // Although as slave we don't control the clock, setWire clock to 400 kHz in case it's used on the master side.
+  Wire.setClock(400000);
+  
+  // Set the PWM frequency (e.g., 1000 Hz for LED tests).
+  pwm.setPWMFreq(1000);
+  
+  // Initially, turn off all PCA9685 channels.
+  setMultiplePWM(0x0000, NULL, 0);
+  lastReceiveTime = millis();
+}
+
+void loop() {
+  // Dacă a fost primit un nou pachet, actualizează PCA9685.
+  if (dataReceived) {
+    noInterrupts();
+    uint16_t mask = receivedMask;
+    uint8_t numVal = receivedNumValues;
+    uint16_t localValues[16];
+    for (uint8_t i = 0; i < numVal; i++) {
+      localValues[i] = receivedValues[i];
+    }
+    dataReceived = false;
+    interrupts();
+    
+
+    
+    setMultiplePWM(mask, localValues, numVal);
+  }
+  
+  // Verifică dacă nu s-a primit refresh în ultimele 200 ms.
+  if (millis() - lastReceiveTime > REFRESH_TIMEOUT) {
+    // Timeout: execută comanda STOP: dezactivează ieșirile și resetează toate canalele la 0.
+    digitalWrite(OE_PIN, HIGH);
+    setMultiplePWM(0x0000, NULL, 0);
+  }
+  
+  #ifdef TEST_MODE
+  // Dacă este activ modul de testare, trimite un pachet de test la fiecare 1000 ms.
+  static unsigned long lastTestTime = 0;
+  if (millis() - lastTestTime > 1000) {
+    testCase();
+    lastTestTime = millis();
+  }
+  #endif
+}
