@@ -1,0 +1,179 @@
+#include <Wire.h>
+#include "PCA9685.h"
+
+// Configurații hardware
+#define PCA9685_ADDRESS 0x40   // Adresa modulului PCA9685
+#define SLAVE_ADDRESS   0x08    // Adresa Arduino ca I²C slave
+#define OE_PIN          5       // Pinul de Output Enable (OE) – HIGH dezactivează ieșirile
+#define FALLBACK_TIMEOUT 300    // Timeout de refresh (ms)
+#define RELEASE_DELAY   50      // Timp după care se dezactivează OE (ms)
+
+// Obiectul PCA9685
+PCA9685 pwm = PCA9685(PCA9685_ADDRESS);
+
+// Variabile volatile pentru datele primite prin I²C
+volatile bool dataReceived = false;
+volatile uint16_t receivedMask = 0;
+volatile uint16_t receivedValues[16]; // Valori PWM pentru canalele active
+volatile uint8_t receivedNumValues = 0; // Numărul de valori primite
+
+// Variabile pentru stocarea ultimului pachet (pentru a evita actualizările inutile)
+uint16_t lastMask = 0;
+uint16_t lastValues[16];
+uint8_t lastNumValues = 0;
+
+// Timestamp pentru ultima primire de date
+unsigned long lastReceiveTime = 0;
+// Flag pentru a semnala că s-a emis comanda de stop
+bool stopIssued = false;
+unsigned long stopTime = 0;
+
+//
+// Funcția de recepție a datelor I²C.
+// Se așteaptă ca pachetul să conțină:
+//   - Primele 2 octeți: mască (big-endian)
+//   - Următorii (N x 2) octeți: valori PWM (0-4095) pentru canalele active.
+// Dacă se primește doar 1 valoare (2 octeți după mască) se folosește funcția "setMultiplePinsSame".
+// Dacă se primesc exact (#activeBits)*2 octeți, se folosește "setMultiplePins".
+//
+void receiveEvent(int numBytes) {
+  // Trebuie să avem cel puțin 2 octeți (pentru mască)
+  if (numBytes < 2) return;
+  
+  // Citește masca (big-endian)
+  uint8_t highByte = Wire.read();
+  uint8_t lowByte  = Wire.read();
+  uint16_t mask = ((uint16_t)highByte << 8) | lowByte;
+  
+  // Numără câte canale active avem
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < 16; i++) {
+    if (mask & (1 << i)) count++;
+  }
+  
+  // Determină tipul pachetului: dacă numBytes == 4 și count > 1, este pachet cu o singură valoare
+  bool singleValuePacket = false;
+  if (numBytes == 4 && count >= 1) {
+    singleValuePacket = true;
+  } else if (numBytes != (2 + count * 2)) {
+    // Dimensiune neașteptată – ignoră pachetul
+    return;
+  }
+  
+  uint16_t values[16];
+  if (singleValuePacket) {
+    uint8_t hb = Wire.read();
+    uint8_t lb = Wire.read();
+    uint16_t singleValue = ((uint16_t)hb << 8) | lb;
+    // Toate canalele active vor primi aceeași valoare
+    for (uint8_t i = 0; i < count; i++) {
+      values[i] = singleValue;
+    }
+  } else {
+    for (uint8_t i = 0; i < count; i++) {
+      uint8_t hb = Wire.read();
+      uint8_t lb = Wire.read();
+      values[i] = ((uint16_t)hb << 8) | lb;
+    }
+  }
+  
+  // Actualizează variabilele globale (în bloc atomic)
+  noInterrupts();
+  receivedMask = mask;
+  receivedNumValues = count;
+  for (uint8_t i = 0; i < count; i++) {
+    receivedValues[i] = values[i];
+  }
+  dataReceived = true;
+  lastReceiveTime = millis();
+  stopIssued = false; // Resetăm comanda de stop dacă primim date
+  interrupts();
+}
+
+void setup() {
+  // Inițializează I2C ca slave
+  Wire.begin(SLAVE_ADDRESS);
+  Wire.onReceive(receiveEvent);
+  Wire.setClock(400000);  // Setează I2C la 400 kHz
+  
+  // Configurare OE pin ca output, inițial LOW (ieșirile active)
+  pinMode(OE_PIN, OUTPUT);
+  digitalWrite(OE_PIN, LOW);
+  
+  // Inițializează PCA9685
+  pwm.begin();
+  pwm.setPWMFreq(100);  // Setează frecvența PWM la 100 Hz
+  
+  // La început, nu trimitem date, dar păstrăm ultima stare ca "nicio actualizare"
+  lastMask = 0;
+  lastNumValues = 0;
+  lastReceiveTime = millis();
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+  
+  // Dacă s-au primit date, verifică dacă sunt diferite de cele anterioare.
+  if (dataReceived) {
+    // Copiem valorile primite în variabile locale (pentru a evita problemele cu modificările în interupere)
+    noInterrupts();
+    uint16_t mask = receivedMask;
+    uint8_t numVal = receivedNumValues;
+    uint16_t localValues[16];
+    for (uint8_t i = 0; i < numVal; i++) {
+      localValues[i] = receivedValues[i];
+    }
+    dataReceived = false;
+    interrupts();
+    
+    // Dacă pachetul primit este diferit de cel precedent, actualizează PCA9685
+    bool different = (mask != lastMask) || (numVal != lastNumValues);
+    if (!different) {
+      for (uint8_t i = 0; i < numVal; i++) {
+        if (localValues[i] != lastValues[i]) {
+          different = true;
+          break;
+        }
+      }
+    }
+    
+    if (different) {
+      // Dacă s-a primit un singur element, folosește setMultiplePinsSame;
+      // dacă s-au primit mai multe elemente, folosește setMultiplePins.
+      if (numVal == 1) {
+        pwm.setMultiplePinsSame(mask, localValues[0]);
+      } else {
+        pwm.setMultiplePins(mask, localValues);
+      }
+      // Salvează starea primită
+      lastMask = mask;
+      lastNumValues = numVal;
+      for (uint8_t i = 0; i < numVal; i++) {
+        lastValues[i] = localValues[i];
+      }
+    }
+    // Actualizează timestamp-ul de refresh
+    lastReceiveTime = currentTime;
+  }
+  
+  // Verifică dacă a expirat timeout-ul de refresh (300ms)
+  if ((currentTime - lastReceiveTime) > FALLBACK_TIMEOUT) {
+    if (!stopIssued) {
+      // Efectuează comanda de stop:
+      // 1. Activează OE (setare HIGH) pentru a opri ieșirile PCA9685.
+      digitalWrite(OE_PIN, HIGH);
+      // 2. Setează toate canalele la 0 (off).
+      pwm.setMultiplePinsSame(0xFFFF, 0);
+      // Marchează momentul emiterii comenzii de stop.
+      stopTime = currentTime;
+      stopIssued = true;
+    } else {
+      // După 50ms, dezactivează OE (setare LOW) pentru a reduce consumul și a permite eventuale actualizări.
+      if ((currentTime - stopTime) >= RELEASE_DELAY) {
+        digitalWrite(OE_PIN, LOW);
+        // Resetăm timeout-ul pentru a evita reemiterea repetată a comenzii de stop
+        lastReceiveTime = currentTime;
+      }
+    }
+  }
+}
