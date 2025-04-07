@@ -1,0 +1,264 @@
+#include <Wire.h>
+#include "PCA9685.h"
+
+// Configurații hardware
+#define PCA9685_ADDRESS 0x40   // Adresa modulului PCA9685
+#define SLAVE_ADDRESS   0x08    // Adresa Arduino ca I²C slave
+#define OE_PIN          5       // Pinul de Output Enable (OE) – HIGH dezactivează ieșirile
+#define FALLBACK_TIMEOUT 300    // Timeout de refresh (ms)
+#define RELEASE_DELAY   50      // Timp după care se dezactivează OE (ms)
+
+// Noi definiții pentru LED și pinul pentru toggle/timeout
+#define LED_PIN 7             // LED-ul care indică pachet identic
+#define PIN8 8                // Pinul care se va comuta la primirea unui pachet și în timeout
+
+// Obiectul PCA9685
+PCA9685 pwm = PCA9685(PCA9685_ADDRESS);
+
+// Variabile volatile pentru datele primite prin I²C
+volatile bool dataReceived = false;
+volatile uint16_t receivedMask = 0;
+volatile uint16_t receivedValues[16]; // Valori PWM pentru canalele active
+volatile uint8_t receivedNumValues = 0; // Numărul de valori primite
+
+// Variabile pentru stocarea ultimului pachet (pentru a evita actualizările inutile)
+uint16_t lastMask = 0;
+uint16_t lastValues[16];
+uint8_t lastNumValues = 0;
+
+// Timestamp pentru ultima primire de date
+unsigned long lastReceiveTime = 0;
+// Flag pentru a semnala că s-a emis comanda de stop
+bool stopIssued = false;
+unsigned long stopTime = 0;
+
+// Variabile globale pentru pinul 8
+bool pin8State = false;  // Starea curentă a pinului 8 (false = LOW, true = HIGH)
+
+// Variabile pentru secvența timeout la pinul 8
+bool timeoutSequenceActive = false;  // Indică dacă secvența timeout este în curs
+int pin8TimeoutState = 0;            // 0: inactiv, 1: off pentru 1 sec, 2: on pentru 2 sec, 3: terminat
+unsigned long pin8TimeoutStart = 0;  // Timestamp pentru schimbările din secvența timeout
+
+//
+// Funcția de recepție a datelor I²C.
+// Se așteaptă ca pachetul să conțină:
+//   - Primele 2 octeți: mască (big-endian)
+//   - Următorii (N x 2) octeți: valori PWM (0-4095) pentru canalele active.
+// Dacă se primește doar 1 valoare (2 octeți după mască) se folosește funcția "setMultiplePinsSame".
+// Dacă se primesc exact (#activeBits)*2 octeți, se folosește "setMultiplePins".
+//
+void receiveEvent(int numBytes) {
+  // Trebuie să avem cel puțin 2 octeți pentru mască
+  if (numBytes < 2) return;
+
+  // Citește masca (big-endian)
+  uint8_t highByte = Wire.read();
+  uint8_t lowByte  = Wire.read();
+  uint16_t mask = ((uint16_t)highByte << 8) | lowByte;
+
+  // Calculează numărul de pini activi din mască
+  uint8_t activeCount = 0;
+  for (uint8_t i = 0; i < 16; i++) {
+    if (mask & (1 << i)) activeCount++;
+  }
+
+  // Calculează câte valori au fost transmise (fiecare valoare este 2 octeți)
+  int remainingBytes = numBytes - 2;
+  if (remainingBytes % 2 != 0) return;  // număr impar de octeți – date invalide
+  uint8_t numValuesReceived = remainingBytes / 2;
+
+  // Verificare condiții de validitate:
+  // - Dacă se primește un singur element, se acceptă întotdeauna.
+  // - Dacă nu se primește un singur element:
+  //    * Pentru activeCount <= 4 se acceptă doar dacă numValuesReceived este egal cu activeCount sau 4.
+  //    * Pentru activeCount > 4 se acceptă doar dacă numValuesReceived este egal cu activeCount.
+  bool allowed = false;
+  if (numValuesReceived == 1) {
+    allowed = true;
+  } else if (activeCount <= 4 && (numValuesReceived == activeCount || numValuesReceived == 4)) {
+    allowed = true;
+  } else if (activeCount > 4 && numValuesReceived == activeCount) {
+    allowed = true;
+  }
+  
+  if (!allowed) {
+    // Dacă pachetul nu respectă așteptările, ignoră restul octeților și oprește prelucrarea.
+    while (Wire.available()) {
+      Wire.read();
+    }
+    return;
+  }
+
+  // Determină dacă avem pachetul special cu o singură valoare.
+  bool singleValuePacket = (numValuesReceived == 1);
+
+  // Buffer temporar pentru valorile citite
+  uint16_t values[16];
+  
+  if (singleValuePacket) {
+    // Citește singura valoare și o aplică tuturor canalelor active
+    uint8_t hb = Wire.read();
+    uint8_t lb = Wire.read();
+    uint16_t singleValue = ((uint16_t)hb << 8) | lb;
+    for (uint8_t i = 0; i < activeCount; i++) {
+      values[i] = singleValue;
+    }
+  } else {
+    // Dacă s-au transmis 4 valori și activeCount este mai mic (1, 2 sau 3), folosim doar primele activeCount valori.
+    // În caz contrar (numValuesReceived egal cu activeCount), folosim exact toate valorile.
+    uint8_t valuesToUse = (numValuesReceived == 4 && activeCount < 4) ? activeCount : numValuesReceived;
+    for (uint8_t i = 0; i < valuesToUse; i++) {
+      uint8_t hb = Wire.read();
+      uint8_t lb = Wire.read();
+      values[i] = ((uint16_t)hb << 8) | lb;
+    }
+  }
+
+  // Actualizează variabilele globale (în bloc atomic)
+  noInterrupts();
+  receivedMask = mask;
+  receivedNumValues = singleValuePacket ? 1 : ((numValuesReceived == 4 && activeCount < 4) ? activeCount : numValuesReceived);
+  for (uint8_t i = 0; i < (singleValuePacket ? activeCount : receivedNumValues); i++) {
+    receivedValues[i] = values[i];
+  }
+  dataReceived = true;
+  lastReceiveTime = millis();
+  stopIssued = false;  // Resetăm comanda de stop dacă primim date
+  interrupts();
+}
+
+void setup() {
+  // Inițializează I2C ca slave
+  Wire.begin(SLAVE_ADDRESS);
+  Wire.onReceive(receiveEvent);
+  Wire.setClock(400000);  // Setează I2C la 400 kHz
+  
+  // Configurare OE pin ca output, inițial LOW (ieșirile active)
+  pinMode(OE_PIN, OUTPUT);
+  digitalWrite(OE_PIN, LOW);
+  
+  // Configurare noi pini:
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+  pinMode(PIN8, OUTPUT);
+  digitalWrite(PIN8, LOW);
+  
+  // Inițializează PCA9685
+  pwm.begin();
+  pwm.setPWMFreq(100);  // Setează frecvența PWM la 100 Hz
+  
+  // La început, nu trimitem date, dar păstrăm ultima stare ca "nicio actualizare"
+  lastMask = 0;
+  lastNumValues = 0;
+  lastReceiveTime = millis();
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+  
+  // Dacă s-au primit date
+  if (dataReceived) {
+    // Anulăm orice secvență timeout în curs pentru pinul 8
+    timeoutSequenceActive = false;
+    pin8TimeoutState = 0;
+    
+    // Toggle pe pinul 8: dacă era activ, îl dezactivează, iar dacă era dezactivat, îl activează
+    pin8State = !pin8State;
+    digitalWrite(PIN8, pin8State ? HIGH : LOW);
+    
+    // Copiem valorile primite în variabile locale (pentru a evita problemele cu modificările în interupere)
+    noInterrupts();
+    uint16_t mask = receivedMask;
+    uint8_t numVal = receivedNumValues;
+    uint16_t localValues[16];
+    for (uint8_t i = 0; i < numVal; i++) {
+      localValues[i] = receivedValues[i];
+    }
+    dataReceived = false;
+    interrupts();
+    
+    // Compară pachetul curent cu cel precedent
+    bool different = (mask != lastMask) || (numVal != lastNumValues);
+    if (!different) {
+      for (uint8_t i = 0; i < numVal; i++) {
+        if (localValues[i] != lastValues[i]) {
+          different = true;
+          break;
+        }
+      }
+    }
+    
+    // Control LED-ul de pe pinul 7:
+    // - Dacă pachetul este identic (nu diferă), aprinde LED-ul.
+    // - Dacă pachetul este diferit, stinge LED-ul.
+    if (!different) {
+      digitalWrite(LED_PIN, HIGH);
+    } else {
+      digitalWrite(LED_PIN, LOW);
+    }
+    
+    // Dacă pachetul este diferit de cel precedent, actualizează PCA9685
+    if (different) {
+      if (numVal == 1) {
+        pwm.setMultiplePinsSame(mask, localValues[0]);
+      } else {
+        pwm.setMultiplePins(mask, localValues);
+      }
+      // Salvează starea primită
+      lastMask = mask;
+      lastNumValues = numVal;
+      for (uint8_t i = 0; i < numVal; i++) {
+        lastValues[i] = localValues[i];
+      }
+    }
+    // Actualizează timestamp-ul de refresh
+    lastReceiveTime = currentTime;
+  }
+  
+  // Verifică dacă a expirat timeout-ul de refresh (300 ms)
+  if ((currentTime - lastReceiveTime) > FALLBACK_TIMEOUT) {
+    // Comanda originală de stop pentru PCA9685
+    if (!stopIssued) {
+      digitalWrite(OE_PIN, HIGH);
+      pwm.setMultiplePinsSame(0xFFFF, 0);
+      stopTime = currentTime;
+      stopIssued = true;
+    } else {
+      if ((currentTime - stopTime) >= RELEASE_DELAY) {
+        digitalWrite(OE_PIN, LOW);
+        lastReceiveTime = currentTime;
+      }
+    }
+    // Inițializare secvență timeout pentru pinul 8 dacă nu e deja activă
+    if (!timeoutSequenceActive) {
+      timeoutSequenceActive = true;
+      pin8TimeoutState = 1;         // Starea 1: dezactivat (LOW) pentru 1 sec
+      pin8TimeoutStart = currentTime;
+      digitalWrite(PIN8, LOW);
+      pin8State = false;            // Actualizează starea globală a pinului 8
+    }
+  }
+  
+  // Secvență timeout pentru pinul 8 (rulează independent)
+  if (timeoutSequenceActive) {
+    if (pin8TimeoutState == 1) { // OFF pentru 1 sec
+      if (currentTime - pin8TimeoutStart >= 1000) {
+        pin8TimeoutState = 2;
+        pin8TimeoutStart = currentTime;
+        digitalWrite(PIN8, HIGH);  // Activează pinul 8
+        pin8State = true;
+      }
+    } else if (pin8TimeoutState == 2) { // ON pentru 2 sec
+      if (currentTime - pin8TimeoutStart >= 2000) {
+        pin8TimeoutState = 3;
+        digitalWrite(PIN8, LOW);   // Stinge pinul 8
+        pin8State = false;
+      }
+    } else if (pin8TimeoutState == 3) {
+      // Secvența s-a terminat; resetează starea
+      timeoutSequenceActive = false;
+      pin8TimeoutState = 0;
+    }
+  }
+}
