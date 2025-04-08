@@ -1,0 +1,106 @@
+#include <Servo.h>
+#include <TM1637Display.h>
+
+Servo servo10;
+Servo servo9;
+
+#define CLK 11
+#define DIO 12
+TM1637Display display(CLK, DIO);
+
+const int angleStep = 3;
+
+float measureCurrent(int pin) {
+  float sum = 0;
+  for (int i = 0; i < 20; i++) {
+    sum += analogRead(pin);
+    delay(1);
+  }
+  float avg = sum / 20.0;
+  return abs((2.5 - (avg * 5.0 / 1024.0)) / 0.185);
+}
+
+void showFloatOnDisplay(float val) {
+  int disp = int(val * 100);
+  display.showNumberDecEx(disp, 0b01000000, false, 4, 0);
+}
+
+void showAlert(int angle, int current) {
+  display.showNumberDec(angle, false, 4, 0);
+  delay(1500);
+  display.showNumberDec(current, false, 4, 0);
+  delay(1500);
+}
+
+void smartTestServo10() {
+  int angle = 0;
+  int retryCount = 0;
+  int maxRetries = 2;
+  bool failFlag = false;
+
+  for (; angle <= 170; angle += angleStep) {
+    servo10.write(angle);
+    delay(10);
+
+    float current = measureCurrent(A2);
+    int disp = int(current * 100);
+    showFloatOnDisplay(current);
+
+    // Zona 0–20: prea aproape de zero
+    if (angle <= 20 && disp > 500) {
+      showAlert(angle, disp);
+      angle = max(0, angle - 20);
+      servo10.write(angle);
+      delay(500);
+      continue;
+    }
+
+    // Zona 45–140: aliniere problematică
+    if (angle >= 45 && angle <= 140 && disp > 350) {
+      showAlert(angle, disp);
+      angle = max(0, angle - 50);
+      servo10.write(angle);
+      delay(500);
+      continue;
+    }
+
+    if (angle >= 140 && angle <= 170 && disp > 380) {
+      showAlert(angle, disp);
+      // Nu retrage, doar se oprește
+      break;
+    }
+
+    // Zona 160–170: ar trebui să simtă rezistență
+    if (angle > 170 && disp < 320) {
+      showAlert(angle, disp);
+      failFlag = true;
+      angle = 0;
+      servo10.write(angle);
+      break;
+    }
+  }
+
+  delay(2000);
+  if (failFlag) {
+    display.showNumberDec(6666);
+  } else {
+    display.showNumberDec(angle, false, 4, 0);
+  }
+}
+
+void setup() {
+  servo10.attach(10);
+  servo9.attach(9);
+  display.setBrightness(0x0f);
+  display.showNumberDec(0);
+  delay(1000);
+}
+
+void loop() {
+  for (int i = 0; i < 5; i++) {
+    smartTestServo10();
+    delay(1500);
+  }
+  display.showNumberDec(9999);
+  while (true) delay(1000);
+}
