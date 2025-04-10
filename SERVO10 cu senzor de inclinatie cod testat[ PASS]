@@ -1,0 +1,134 @@
+#include <Servo.h>
+
+Servo myServo;
+
+const int pinServo = 9;
+const int pinSensor = A3;
+const int pinLedLow = 7;
+const int pinLedHigh = 8;
+
+int currentAngle = 90;
+
+void setup() {
+  myServo.attach(pinServo);
+  pinMode(pinLedLow, OUTPUT);
+  pinMode(pinLedHigh, OUTPUT);
+  digitalWrite(pinLedLow, LOW);
+  digitalWrite(pinLedHigh, LOW);
+
+  // LED test: ambele aprinse 1 sec
+  digitalWrite(pinLedLow, HIGH);
+  digitalWrite(pinLedHigh, HIGH);
+  delay(1000);
+  digitalWrite(pinLedLow, LOW);
+  digitalWrite(pinLedHigh, LOW);
+
+  // Test senzor A3
+  updateLEDs();
+
+  // Mută servo la 177
+  for (int angle = currentAngle; angle <= 177; angle++) {
+    myServo.write(angle);
+    delay(10);
+  }
+  currentAngle = 177;
+  delay(700); // dăm timp sursei să-și revină din șoc
+
+  // Testăm cu state = 1, până reușim sau 3 încercări
+  int tries = 0;
+  int result = 177;
+  while (tries < 10) {
+    result = seteazaServo(1);
+    if (result <= 4) {
+      break; // succes
+    }
+    tries++;
+    delay(700); // pauză între încercări
+  }
+
+  // Servo detasat
+  myServo.detach();
+
+  // 1 minut de observare senzor
+  unsigned long startTime = millis();
+  while (millis() - startTime < 60000) {
+    updateLEDs();
+    delay(20); // nu citim obsesiv
+  }
+
+  // Oprire program – stingem tot
+  digitalWrite(pinLedLow, LOW);
+  digitalWrite(pinLedHigh, LOW);
+}
+
+void loop() {
+  // nimic. programul s-a terminat.
+}
+
+int seteazaServo(int state) {
+  if (state == 0) {
+    for (int angle = currentAngle; angle <= 177; angle++) {
+      myServo.write(angle);
+      delay(10);
+    }
+    currentAngle = 177;
+    return currentAngle;
+  }
+
+  if (state == 1) {
+    // int highCounter = 0; // Lăsat aici în caz că revii la logica mai tolerantă
+
+    for (int angle = currentAngle; angle >= 3; angle -= 3) {
+      myServo.write(angle);
+      delay(20);  // delay mărit la 20ms între pași
+
+      int sensorValue = analogRead(pinSensor);
+
+      // LED update
+      if (sensorValue > 10) {
+        digitalWrite(pinLedHigh, HIGH);
+        digitalWrite(pinLedLow, LOW);
+
+        // Retragere imediată la primul HIGH detectat
+        for (int retract = angle; retract <= 170; retract += 3) {
+          myServo.write(retract);
+          delay(20);
+        }
+        currentAngle = 170;
+        return currentAngle;
+      } else {
+        digitalWrite(pinLedHigh, LOW);
+        digitalWrite(pinLedLow, HIGH);
+        // highCounter = 0; // dacă revii la verificare pe 3 treceri
+      }
+    }
+
+    // Verificare suplimentară înainte de returnare finală
+    delay(100);
+    int finalCheck = analogRead(pinSensor);
+    if (finalCheck > 10) {
+      for (int retract = 3; retract <= 170; retract += 3) {
+        myServo.write(retract);
+        delay(20);
+      }
+      currentAngle = 170;
+      return currentAngle;
+    }
+
+    currentAngle = 3;
+    return currentAngle;
+  }
+
+  return currentAngle;
+}
+
+void updateLEDs() {
+  int sensorValue = analogRead(pinSensor);
+  if (sensorValue > 10) {
+    digitalWrite(pinLedHigh, HIGH);
+    digitalWrite(pinLedLow, LOW);
+  } else {
+    digitalWrite(pinLedHigh, LOW);
+    digitalWrite(pinLedLow, HIGH);
+  }
+}
