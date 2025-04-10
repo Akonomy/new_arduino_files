@@ -1,0 +1,469 @@
+#include <Arduino.h>
+#include <Servo.h>
+#include <TM1637Display.h>
+
+// Structura pentru un interval
+struct Interval {
+  uint8_t limitA;       // Limita inferioară (0–180)
+  uint8_t limitB;       // Limita superioară (0–180)
+  uint16_t maxCurrent;  // Valoare dinamică (default specificat, se poate actualiza ulterior)
+  uint8_t action;       // Acțiune:
+                        // 0 -> retragere instant,
+                        // 1 -> stop,
+                        // 2 -> do nothing
+};
+
+// Structura pentru un servo
+struct ServoData {
+  uint8_t id;             // Identificatorul servo (setat de utilizator)
+  uint8_t direction;      // Direcție:
+                          // 1 -> forward (de la 0 la 180, crescător),
+                          // 0 -> reverse (de la 180 la 0, descrescător)
+  uint8_t defaultAngle;   // Unghiul implicit (0–180)
+  int currentSensorPin;   // Pin analogic pentru senzorul de curent (ex.: A2 sau A3)
+  uint8_t controlPin;     // Pin digital pentru controlul servo (ex.: 9 sau 10)
+  Interval intervals[4];  // Array de 4 intervale
+};
+
+// Declararea variabilelor globale pentru cele două servouri
+ServoData servo10, servo9;
+
+// Obiectele din biblioteca Servo pentru controlul efectiv
+Servo myServo10, myServo9;
+
+// Definirea pinilor pentru display (TM1637)
+#define CLK 11
+#define DIO 12
+TM1637Display display(CLK, DIO);
+
+// Definirea pasului de unghi
+const uint8_t angleStep = 3;
+
+
+
+// Variabile globale pentru a păstra ultima poziție (last angle) pentru fiecare servo
+int lastAngle10 = 0;
+int lastAngle9 = 0;
+
+
+// Variabile globale pentru a păstra curentul și unghiul măsurate (pentru utilizări ulterioare)
+float globalCurrent = 0.0;
+int globalAngle = 0;
+
+//--------------------------------------
+// Funcția de măsurare a curentului
+//--------------------------------------
+float measureCurrent(int pin) {
+  float sum = 0;
+  for (int i = 0; i < 20; i++) {
+    sum += analogRead(pin);
+    delay(1);  // Delay mic pentru măsurare internă
+  }
+  float avg = sum / 20.0;
+  return abs((2.5 - (avg * 5.0 / 1024.0)) / 0.185);
+}
+
+//--------------------------------------
+// Funcția de afișare a curentului pe display
+//--------------------------------------
+void showFloatOnDisplay(float val) {
+  int disp = int(val * 100);
+  display.showNumberDecEx(disp, 0b01000000, false, 4, 0);
+}
+
+//--------------------------------------
+// Funcția care execută testul pe un servo, cu mod de actualizare setat prin 'unconditional'.
+// Parametrii:
+//   servoData: structura asociată servo-ului
+//   servo: obiectul Servo
+//   startAngle: unghiul de start
+//   endAngle: unghiul final
+//   forward: dacă true, mișcarea este crescătoare; altfel descrescătoare
+//   unconditional: dacă true, se actualizează valoarea în structura de interval la fiecare pas
+//                  (de fiecare dată se salvează valoarea măsurată, înlocuind orice valoare anterioară),
+//                  dacă false, se actualizează doar dacă noua valoare este mai mare decât cea memorată.
+ //--------------------------------------
+void runServoTestMode(ServoData &servoData, Servo &servo, int startAngle, int endAngle, bool forward, bool unconditional) {
+  // Resetăm valorile maxime pentru fiecare interval
+  for (int i = 0; i < 4; i++) {
+    servoData.intervals[i].maxCurrent = 0;
+  }
+  
+  if (forward) {
+    for (int angle = startAngle; angle <= endAngle; angle += angleStep) {
+      servo.write(angle);
+      
+
+      
+      float currentVal = measureCurrent(servoData.currentSensorPin);
+      showFloatOnDisplay(currentVal);
+
+            // Așteptăm 10 ms folosind millis()
+      unsigned long tStep = millis();
+      while (millis() - tStep < 10) { }
+      
+      for (int i = 0; i < 4; i++) {
+        if (angle >= servoData.intervals[i].limitA && angle <= servoData.intervals[i].limitB) {
+          int currentDisplay = int(currentVal * 100);
+          if (unconditional) {
+            // Actualizare fără condiție
+            servoData.intervals[i].maxCurrent = currentDisplay;
+          } else {
+            // Actualizare numai dacă noua valoare este mai mare
+            if (currentDisplay > servoData.intervals[i].maxCurrent) {
+              servoData.intervals[i].maxCurrent = currentDisplay;
+            }
+          }
+          break; // fiecare unghi intră într-un singur interval
+        }
+      }
+      globalCurrent = currentVal;
+      globalAngle = angle;
+    }
+  }
+  else {  // Mișcare descrescătoare
+    for (int angle = startAngle; angle >= endAngle; angle -= angleStep) {
+      servo.write(angle);
+      
+ 
+      
+      float currentVal = measureCurrent(servoData.currentSensorPin);
+      showFloatOnDisplay(currentVal);
+            // Așteptăm 10 ms folosind millis()
+      unsigned long tStep = millis();
+      while (millis() - tStep < 10) { }
+      
+      for (int i = 0; i < 4; i++) {
+        if (angle >= servoData.intervals[i].limitA && angle <= servoData.intervals[i].limitB) {
+          int currentDisplay = int(currentVal * 100);
+          if (unconditional) {
+            servoData.intervals[i].maxCurrent = currentDisplay;
+          } else {
+            if (currentDisplay > servoData.intervals[i].maxCurrent) {
+              servoData.intervals[i].maxCurrent = currentDisplay;
+            }
+          }
+          break;
+        }
+      }
+      globalCurrent = currentVal;
+      globalAngle = angle;
+    }
+  }
+}
+
+//--------------------------------------
+// Funcția de afișare a rezultatelor testului:
+// Afișează pe display ID-ul servo-ului și, pentru fiecare interval, numărul intervalului și valoarea maximă înregistrată.
+//--------------------------------------
+void displayTestResults(const ServoData &servoData) {
+  unsigned long tStart;
+  
+  // Afișează ID-ul servo-ului (10 sau 9) timp de 1500 ms
+  display.showNumberDec(servoData.id, false, 4, 0);
+  tStart = millis();
+  while (millis() - tStart < 1500) { }
+  
+  // Afișare rezultate pentru fiecare interval
+  for (int i = 0; i < 4; i++) {
+    // Afișează numărul intervalului pentru 500 ms
+    display.showNumberDec(i, false, 4, 0);
+    tStart = millis();
+    while (millis() - tStart < 500) { }
+    
+    // Afișează valoarea maximă a curentului pentru intervalul respectiv timp de 1500 ms
+    display.showNumberDec(servoData.intervals[i].maxCurrent, false, 4, 0);
+    tStart = millis();
+    while (millis() - tStart < 1500) { }
+  }
+}
+
+//--------------------------------------
+// Funcția de calibrare
+// Această funcție rulează în două etape:
+//   Etapa 1 – Pretestare (actualizare unconditional):
+//     - Pentru fiecare servo (10 și 9), se mută la poziția de start (defaultAngle),
+//       se așteaptă 200 ms și se execută mișcarea, memorizând la fiecare interval valoarea curentului
+//       măsurată (înlocuind orice valoare anterioară, indiferent de mărime).
+//   Etapa 2 – Finisare (actualizare condițională):
+//     - Pentru fiecare servo se repetă procedura din poziția default,
+//       se așteaptă 200 ms și se execută mișcarea, actualizând valorile în
+//       interval doar dacă valoarea măsurată este mai mare decât cea precedentă.
+// La final, se afișează pe display rezultatele finale pentru servo 10 și servo 9.
+//--------------------------------------
+void calibrare() {
+  unsigned long t;
+  
+  // Etapa 1 – Pretestare (actualizare unconditional)
+  // Servo 10:
+  myServo9.write(servo9.defaultAngle);
+  t = millis();
+  while(millis() - t < 500) { }
+
+  myServo10.write(servo10.defaultAngle);
+  t = millis();
+  while(millis() - t < 500) { }
+  runServoTestMode(servo10, myServo10, servo10.defaultAngle, 175, true, true);
+  
+  // Servo 9:
+  myServo9.write(3);
+  t = millis();
+  while(millis() - t < 500) { }
+ 
+  
+  // Etapa 2 – Finisare (actualizare condițională)
+  // Servo 10:
+  myServo10.write(servo10.defaultAngle);
+  t = millis();
+  while(millis() - t < 500) { }
+  runServoTestMode(servo10, myServo10, servo10.defaultAngle, 175, true, false);
+  
+
+  // Afișarea rezultatelor finale:
+  //displayTestResults(servo10);
+  //displayTestResults(servo9);
+}
+
+
+
+
+//--------------------------------------
+// Funcția nouă: seteazaServo()
+// Parametrii:
+//   servoId: id-ul servo-ului (10 sau 9)
+//   state: 0 (mișcare de la 180→0) sau 1 (mișcare de la 0→180)
+// Returnează unghiul final la care s-a oprit servo-ul.
+// Funcția se bazează pe structura servo și folosește variabilele globale lastAngle10 și lastAngle9.
+//--------------------------------------
+int seteazaServo(uint8_t servoId, uint8_t state) {
+
+  delay(200);
+  if (servoId == 10) {
+    // Pentru servo 10, mișcarea de tip 1 este de la unghiuri mici (aproximativ 0, 1 și zonele inferioare) spre 175.
+    if (state == 1) {
+      // Dacă s-a efectuat deja mișcarea (ultimul unghi este în intervalul 2 sau 3, adică ≥141),
+      // se returnează imediat unghiul curent.
+
+      int dest = 151;
+      for (int angle = lastAngle10; angle <= dest; angle += angleStep) {
+        myServo10.write(angle);
+        unsigned long tStep = millis();
+        while (millis() - tStep < 10) { ;} // Așteptare 10 ms între pași
+        
+        float currentVal = measureCurrent(servo10.currentSensorPin);
+        int currentDisplay = int(currentVal * 100);
+        
+        // Verificarea acțiunii de protecție pentru intervalul corespunzător
+        for (int i = 1; i < 4; i++) {
+          if (angle >= servo10.intervals[i].limitA && angle <= servo10.intervals[i].limitB) {
+            if (currentDisplay > servo10.intervals[i].maxCurrent) {
+              if (servo10.intervals[i].action == 0) {
+                // Action 0: Retragere imediată – mișcare de la unghiul curent către default (3) cu pas de 5
+                for (int a = angle; a >= servo10.defaultAngle; a -= 5) {
+                  myServo10.write(a);
+                  unsigned long tRetract = millis();
+                  while (millis() - tRetract < 10) { }
+                }
+                lastAngle10 = servo10.defaultAngle;
+                return lastAngle10;
+              }
+              else if (servo10.intervals[i].action == 1) {
+                // Action 1: Stop – se oprește mișcarea
+                lastAngle10 = angle;
+                return angle;
+              }
+              // Action 2: nu este implementată
+            }
+            break;
+          }
+        }
+        lastAngle10 = angle;
+      }
+      return lastAngle10;
+    }
+    else if (state == 0) {
+      // Pentru servo 10, state 0 = mișcare de la curent spre default (3)
+      int dest = servo10.defaultAngle;
+      if (lastAngle10 <= dest)
+         return lastAngle10;
+      for (int angle = lastAngle10; angle >= dest; angle -= angleStep) {
+        myServo10.write(angle);
+        unsigned long tStep = millis();
+        while (millis() - tStep < 10) { }
+        
+        float currentVal = measureCurrent(servo10.currentSensorPin);
+        int currentDisplay = int(currentVal * 100);
+        
+        for (int i = 0; i < 4; i++) {
+          if (angle >= servo10.intervals[i].limitA && angle <= servo10.intervals[i].limitB) {
+            if (currentDisplay > servo10.intervals[i].maxCurrent) {
+              if (servo10.intervals[i].action == 0) {
+                // Retragere imediată: mișcare de la unghiul curent către default cu pas 5
+                for (int a = angle; a <= servo10.defaultAngle; a += 5) {
+                  myServo10.write(a);
+                  unsigned long tRetract = millis();
+                  while (millis() - tRetract < 10) { }
+                }
+                lastAngle10 = servo10.defaultAngle;
+                return lastAngle10;
+              }
+              else if (servo10.intervals[i].action == 1) {
+                lastAngle10 = angle;
+                return angle;
+              }
+            }
+            break;
+          }
+        }
+        lastAngle10 = angle;
+      }
+      return lastAngle10;
+    }
+  } 
+  else if (servoId == 9) {
+    // Pentru servo 9, se verifică dacă ultimul unghi este deja la destinație
+    if (state == 1) {
+      int dest = 177;  // Pentru state 1, destinația este maxim 177 (servo9 default)
+      if (lastAngle9 >= dest)
+         return lastAngle9;
+      for (int angle = lastAngle9; angle <= dest; angle += angleStep) {
+        myServo9.write(angle);
+
+
+        unsigned long tStep = millis();
+        while (millis() - tStep < 10) { }
+        
+        float currentVal = analogRead(A3);
+        int currentDisplay = int(currentVal);
+
+
+        
+        
+        lastAngle9 = angle;
+      }
+      return lastAngle9;
+    }
+
+
+
+    else if (state == 0) {
+      int dest = 3;  // Pentru state 0, destinația este minim 3
+      if (lastAngle9 <= dest)
+         return lastAngle9;
+      for (int angle = lastAngle9; angle >= dest; angle -= angleStep) {
+        myServo9.write(angle);
+
+    
+
+        unsigned long tStep = millis();
+        while (millis() - tStep < 10) { }
+
+            float currentVal = analogRead(A3);
+        int currentDisplay = int(currentVal);
+
+        
+        for (int i = 0; i < 4; i++) {
+          if (angle >= servo9.intervals[i].limitA && angle <= servo9.intervals[i].limitB) {
+            if (currentDisplay > servo9.intervals[i].maxCurrent) {
+              if (servo9.intervals[i].action == 0) {
+                for (int a = angle; a >= dest; a -= 5) {
+                  myServo9.write(a);
+                  unsigned long tRetract = millis();
+                  while (millis() - tRetract < 10) { }
+                }
+                lastAngle9 = dest;
+                return lastAngle9;
+              }
+              else if (servo9.intervals[i].action == 1) {
+                lastAngle9 = angle;
+                return angle;
+              }
+            }
+            break;
+          }
+        }
+        lastAngle9 = angle;
+      }
+      return lastAngle9;
+    }
+  }
+  return -1;  // Dacă servoId nu e 10 sau 9
+}
+
+
+
+void setup() {
+  // Inițializarea servo10:
+  // id: 10, direcție: 0 (reverse: 180 -> 0), defaultAngle: 3, senzor de curent: A2, control: pin 10
+  servo10.id = 10;
+  servo10.direction = 0;
+  servo10.defaultAngle = 3;
+  servo10.currentSensorPin = A2;
+  servo10.controlPin = 10;
+  // Definirea intervalelor pentru servo10
+  servo10.intervals[0] = {3, 20, 400, 0};
+  servo10.intervals[1] = {21, 140, 300, 0};
+  servo10.intervals[2] = {141, 156, 300, 1};
+  servo10.intervals[3] = {157, 175, 300, 0};
+
+  // Inițializarea servo9:
+  // id: 9, direcție: 1 (forward: 0 -> 180), defaultAngle: 177, senzor de curent: A3, control: pin 9
+  servo9.id = 9;
+  servo9.direction = 1;
+  servo9.defaultAngle = 177;
+  servo9.currentSensorPin = A3;
+  servo9.controlPin = 9;
+  // Definirea intervalelor pentru servo9
+  servo9.intervals[0] = {3, 59, 400, 0};
+  servo9.intervals[1] = {60, 115, 300, 0};
+  servo9.intervals[2] = {116, 165, 300, 0};
+  servo9.intervals[3] = {166, 177, 1500, 0};
+
+  // Atașarea obiectelor Servo la pinii de control
+  myServo10.attach(servo10.controlPin);
+  myServo9.attach(servo9.controlPin);
+  
+  // Configurarea displayului TM1637
+  display.setBrightness(0x0f);
+  display.showNumberDec(0);
+}
+
+void loop() {
+  // Apelează funcția de calibrare
+  calibrare();
+  
+  // După finalizarea calibrarei, se oprește execuția
+
+  int wanted_angle=0;
+  uint8_t incercari=0;
+
+
+ seteazaServo(10, 0);
+  seteazaServo(9, 1);
+  delay(2000);
+
+
+while(wanted_angle<145 && incercari<10){
+
+wanted_angle=seteazaServo(10, 1);
+ delay(500);
+incercari++;
+
+}
+  
+wanted_angle=177;
+
+
+while(wanted_angle>10 && incercari<10){
+
+wanted_angle=seteazaServo(9, 0);
+ delay(500);
+incercari++;
+
+}
+
+
+  while (true) {
+    delay(1000);
+  }
+}
