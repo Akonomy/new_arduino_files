@@ -1,0 +1,35 @@
+// Definirea pinilor
+const int sensorPin = A3;  // Pinul analogic A3
+const int ledPin8 = 8;      // Pinul digital 8 conectat la LED
+const int ledPin7 = 7;   
+
+void setup() {
+  pinMode(ledPin8, OUTPUT);
+   pinMode(ledPin7, OUTPUT);// Setați pinul LED ca ieșire
+  // (Opțional) Inițializare serială pentru debugging:
+  Serial.begin(9600);
+}
+
+void loop() {
+  int sensorValue = analogRead(sensorPin);  // Citirea valorii de la A3
+  
+
+  
+  // Dacă valoarea este peste 1000, se aprinde LED-ul (HIGH)
+  if (sensorValue > 10) {
+    digitalWrite(ledPin7, HIGH);
+    delay(200);
+     digitalWrite(ledPin7, LOW);
+     delay(100);
+      digitalWrite(ledPin7, HIGH);
+
+     digitalWrite(ledPin8, LOW);
+  }
+  // Dacă valoarea citită este exact 0, se stinge LED-ul (LOW)
+  else if (sensorValue == 0) {
+    digitalWrite(ledPin7, LOW);
+     digitalWrite(ledPin8, HIGH);
+  }
+  
+  delay(10);  // Pauză de 10 milisecunde între citiri
+}
