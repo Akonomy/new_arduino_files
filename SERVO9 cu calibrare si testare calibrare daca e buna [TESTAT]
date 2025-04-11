@@ -1,0 +1,317 @@
+#include <Arduino.h>
+#include <Servo.h>
+#include <TM1637Display.h>
+
+//////////////////////////////////////////////////////////
+// Structuri și definiții de tip
+//////////////////////////////////////////////////////////
+
+// Structura pentru configurația servo-ului; aici se folosește doar servo10.
+struct ServoData {
+  uint8_t id;              // Identificatorul servo-ului
+  uint8_t defaultAngle;    // Unghiul default (0–180°)
+  int currentSensorPin;    // Pin analogic pentru senzorul de curent (ex.: A2)
+  uint8_t controlPin;      // Pin digital pentru control (ex.: 10)
+};
+
+//////////////////////////////////////////////////////////
+// Variabile globale și obiecte hardware
+//////////////////////////////////////////////////////////
+
+ServoData servo10;       // Configurare pentru servo10
+Servo myServo10;         // Obiectul Servo
+
+// Display TM1637 cu pinii CLK = 11 și DIO = 12
+TM1637Display display(11, 12);
+
+// LED pe pinul 7 pentru semnalizare în caz de curent prea mare
+const int ledPin = 7;
+
+// Parametrii de test și calibrare:
+const uint8_t angleStepIncrease = 3;  // Pas în fazele de creștere
+const uint8_t angleStepDecrease = 5;  // Pas în faza de descreștere
+const int startAngle = 3;             // Unghiul default de început (3°)
+const int limitPhase1 = 40;           // Finalul intervalului 1
+const int limitPhase2 = 160;          // Finalul intervalului de notare a curentului maxim
+const int maxAngle = 177;             // Unghiul maxim
+
+// Praguri pentru curent și număr de măsurători consecutive
+const float safeCurrentThreshold = 4.0;     // Prag sigur = 4A pentru faza 1
+const float emergencyCurrentThreshold = 6.0;  // Prag de urgență = 6A
+const int over4AAllowed = 3;    // Numar maxim de măsurători consecutive peste 4A
+const int over6AAllowed = 2;    // Numar maxim de măsurători consecutive peste 6A
+
+// Variabile globale pentru urmărirea unghiului curent și a curentului maxim din calibrare
+int currentAngle10 = startAngle;      // Pornim de la 3°
+float calibMaxCurrent = 0.0;            // Se actualizează în calibrare
+
+// Flag pentru a rula calibrarea o singură dată în loop:
+bool calibrationDone = false;
+
+//////////////////////////////////////////////////////////
+// Funcții helper (măsurare curent, afișare pe display)
+//////////////////////////////////////////////////////////
+
+// Măsoară curentul folosind 20 de eșantioane și convertește valoarea citită.
+float measureCurrent(int pin) {
+  float sum = 0;
+  const int samples = 20;
+  for (int i = 0; i < samples; i++) {
+    sum += analogRead(pin);
+    delay(1);
+  }
+  float avg = sum / samples;
+  return abs((2.5 - (avg * 5.0 / 1024.0)) / 0.185);
+}
+
+// Afișează o valoare zecimală pe displayul TM1637 (valoarea este înmulțită cu 100)
+void showFloatOnDisplay(float val) {
+  int dispVal = int(val * 100);
+  display.showNumberDecEx(dispVal, 0b01000000, false, 4, 0);
+}
+
+//////////////////////////////////////////////////////////
+// Funcția de calibrare
+//////////////////////////////////////////////////////////
+
+// Procedura de calibrare pentru servo10:
+//   1. Se mută servo-ul la poziția default (3°).
+//   2. Se crește unghiul cu pași de 3° până la 40° cu verificarea curentului.
+//      Dacă în această fază curentul rămâne peste 4A pentru prea multe măsurători consecutive,
+//      se oprește această etapă.
+//   3. De la 40° la 160° se înregistrează valoarea maximă de curent.
+ //  4. De la 160° la 177° se măsoară curentul fără a actualiza max.
+//   5. Se revine cu pași de 5° până aproape de default, apoi se setează exact la 3°.
+//   6. Se afișează valoarea maximă măsurată în intervalul 40-160°, se actualizează calibMaxCurrent,
+//      se detach-ează servo-ul și se iese din funcție.
+void runCalibration() {
+  int consecutiveOver4A = 0;
+  int consecutiveOver6A = 0;
+  float maxMeasuredCurrent = 0.0;
+
+  // Pasul 1: Mută servo-ul la poziția default.
+  myServo10.write(servo10.defaultAngle);
+  delay(500);
+
+  // Faza 1: De la 3° la 40° cu pași de 3°.
+  for (int angle = servo10.defaultAngle; angle <= limitPhase1; angle += angleStepIncrease) {
+    myServo10.write(angle);
+    delay(10);
+    float currentVal = measureCurrent(servo10.currentSensorPin);
+    showFloatOnDisplay(currentVal);
+
+    if (currentVal > safeCurrentThreshold)
+      consecutiveOver4A++;
+    else
+      consecutiveOver4A = 0;
+    
+    if (currentVal > emergencyCurrentThreshold)
+      consecutiveOver6A++;
+    else
+      consecutiveOver6A = 0;
+    
+    if (consecutiveOver6A > over6AAllowed || consecutiveOver4A > over4AAllowed) {
+      digitalWrite(ledPin, HIGH); // Semnalizare de urgență sau condiție nesigură
+      break;
+    }
+  }
+
+  // Faza 2: De la 40° la 160° – se înregistrează maximul de curent.
+  for (int angle = limitPhase1; angle <= limitPhase2; angle += angleStepIncrease) {
+    myServo10.write(angle);
+    delay(10);
+    float currentVal = measureCurrent(servo10.currentSensorPin);
+    showFloatOnDisplay(currentVal);
+    
+    if (currentVal > maxMeasuredCurrent)
+      maxMeasuredCurrent = currentVal;
+    
+    if (currentVal > emergencyCurrentThreshold)
+      consecutiveOver6A++;
+    else
+      consecutiveOver6A = 0;
+    
+    if (consecutiveOver6A > over6AAllowed) {
+      digitalWrite(ledPin, HIGH);
+      break;
+    }
+  }
+
+  // Faza 3: De la 160° la 177° – doar măsurare.
+  for (int angle = limitPhase2; angle <= maxAngle; angle += angleStepIncrease) {
+    myServo10.write(angle);
+    delay(10);
+    float currentVal = measureCurrent(servo10.currentSensorPin);
+    showFloatOnDisplay(currentVal);
+    
+    if (currentVal > emergencyCurrentThreshold)
+      consecutiveOver6A++;
+    else
+      consecutiveOver6A = 0;
+    
+    if (consecutiveOver6A > over6AAllowed) {
+      digitalWrite(ledPin, HIGH);
+      break;
+    }
+  }
+
+  // Faza 4: Reducerea unghiului din maxAngle până aproape de default, cu pași de 5°.
+  for (int angle = maxAngle; angle >= servo10.defaultAngle + 1; angle -= angleStepDecrease) {
+    myServo10.write(angle);
+    delay(10);
+    float currentVal = measureCurrent(servo10.currentSensorPin);
+    showFloatOnDisplay(currentVal);
+    
+    if (currentVal > emergencyCurrentThreshold)
+      consecutiveOver6A++;
+    else
+      consecutiveOver6A = 0;
+    
+    if (consecutiveOver6A > over6AAllowed) {
+      digitalWrite(ledPin, HIGH);
+      break;
+    }
+  }
+
+  // Asigură-te că servo-ul ajunge la poziția default exact.
+  myServo10.write(servo10.defaultAngle);
+  delay(500);
+
+  // Afișează pe display valoarea maximă măsurată în intervalul 40°–160°.
+  showFloatOnDisplay(maxMeasuredCurrent);
+  
+  // Actualizează valoarea globală de calibrare.
+  calibMaxCurrent = maxMeasuredCurrent;
+  
+  // Deatch-ează servo-ul.
+  myServo10.detach();
+}
+
+//////////////////////////////////////////////////////////
+// Funcția de test: moveServo10
+//////////////////////////////////////////////////////////
+
+// Funcția moveServo10 acceptă un parametru state:
+//   - Dacă state == 0: deplasează servo10 din poziția curentă spre 3° cu pași de 3°
+//     și returnează 3.
+//   - Dacă state == 1: deplasează servo10 din poziția curentă spre 145° cu pași de 3°,
+//     măsurând curentul la fiecare pas. Dacă, în intervalul 40°–135°, curentul depășește
+//     calibMaxCurrent, se activează modul retragere (servo-ul se întoarce spre 3°) și se
+//     returnează 3. Dacă, în intervalul 135°–145°, curentul depășește calibMaxCurrent,
+//     se oprește la acel unghi și se returnează unghiul respectiv.
+int moveServo10(uint8_t state) {
+  if (state == 0) {
+    // Deplasare spre 3° cu pași de 3°.
+    for (int angle = currentAngle10; angle > 3; angle -= 3) {
+      myServo10.write(angle);
+      delay(10);
+      currentAngle10 = angle;
+    }
+    myServo10.write(3);
+    currentAngle10 = 3;
+    return 3;  // Returnează 3: poziție de start
+  } 
+  else if (state == 1) {
+    // Deplasare spre 145° cu pași de 3°, cu măsurare de curent.
+    for (int angle = currentAngle10; angle <= 155; angle += 3) {
+      myServo10.write(angle);
+      delay(10);
+      float currentVal = measureCurrent(servo10.currentSensorPin);
+      showFloatOnDisplay(currentVal);
+      
+      // Dacă, în intervalul 40°–135°, curentul depășește calibMaxCurrent,
+      // se activează retragerea (servo-ul se întoarce spre 3°).
+      if (angle >= 40 && angle <= 144 && currentVal > calibMaxCurrent) {
+        for (int ret = angle; ret > 3; ret -= 3) {
+          myServo10.write(ret);
+          delay(10);
+          currentAngle10 = ret;
+        }
+        myServo10.write(3);
+        currentAngle10 = 3;
+        return 3;  // Indică retragerea
+      }
+      
+      // Dacă, în intervalul 135°–145°, curentul depășește calibMaxCurrent,
+      // se oprește mișcarea și se returnează unghiul curent.
+      if (angle >= 145 && angle <= 155 && currentVal > calibMaxCurrent) {
+        currentAngle10 = angle;
+        return angle;
+      }
+      
+      // Actualizează poziția curentă.
+      currentAngle10 = angle;
+    }
+    return currentAngle10;  // Returnează 145 (ideal) dacă nu apare o anomalie
+  }
+  return currentAngle10;
+}
+
+//////////////////////////////////////////////////////////
+// Setup și loop
+//////////////////////////////////////////////////////////
+
+void setup() {
+  Serial.begin(9600);
+  
+  // Configurează pinul LED ca ieșire.
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW);
+  
+  // Configurează displayul.
+  display.setBrightness(0x0F);
+  display.showNumberDec(0);
+
+  // Configurarea structurii pentru servo10.
+  servo10.id = 10;
+  servo10.defaultAngle = startAngle;      // 3°
+  servo10.currentSensorPin = A2;            // De exemplu A2
+  servo10.controlPin = 10;                  // De exemplu pinul digital 10
+
+  // Atașează servo-ul.
+  myServo10.attach(servo10.controlPin);
+}
+
+void loop() {
+  // Se rulează calibrarea doar o dată.
+  if (!calibrationDone) {
+    runCalibration();
+    calibrationDone = true;
+  }
+  
+  // Testăm funcția moveServo10.
+  // Reatașăm servo-ul pentru test (dacă a fost detach-at în calibrare):
+  myServo10.attach(servo10.controlPin);
+  
+  // 1. Test pentru state 0: trebuie să deplaseze servo-ul spre 3°.
+  int finalAngle0 = moveServo10(0);
+
+  delay(2000);
+  
+  // 2. Test pentru state 1: testează deplasarea spre 145° cu verificări.
+  int finalAngle1 = moveServo10(1);
+
+  delay(2000);
+
+
+  moveServo10(0);
+    delay(2000);
+
+    uint8_t incercari=0;
+    while(finalAngle1<120 && incercari<15){
+
+  finalAngle1 = moveServo10(1);
+  incercari++;
+  delay(2000);
+
+    }
+
+
+
+  
+  // După testare, putem alege să detachăm servo-ul și să oprim execuția.
+  myServo10.detach();
+  while (true) {
+    delay(1000);
+  }
+}
