@@ -213,7 +213,7 @@ int moveServo10(uint8_t state) {
   } 
   else if (state == 1) {
     // Deplasare spre 145° cu pași de 3°, cu măsurare de curent.
-    for (int angle = currentAngle10; angle <= 155; angle += 3) {
+    for (int angle = currentAngle10; angle <= 157; angle += 3) {
       myServo10.write(angle);
       delay(10);
       float currentVal = measureCurrent(servo10.currentSensorPin);
@@ -234,7 +234,7 @@ int moveServo10(uint8_t state) {
       
       // Dacă, în intervalul 135°–145°, curentul depășește calibMaxCurrent,
       // se oprește mișcarea și se returnează unghiul curent.
-      if (angle >= 145 && angle <= 155 && currentVal > calibMaxCurrent) {
+      if (angle >= 145 && angle <= 157 && currentVal > calibMaxCurrent) {
         currentAngle10 = angle;
         return angle;
       }
